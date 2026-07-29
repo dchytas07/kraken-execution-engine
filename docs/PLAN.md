@@ -561,3 +561,53 @@ catch.
 
 **Lesson:** a passing unit test proves a guard computes correctly. It says
 nothing about whether the dangerous path invokes it. Both need asserting.
+
+---
+
+## 10. Two funnels — a standing constraint on all later stages
+
+Both exist because of the same failure: a safety mechanism that was correct,
+tested, and never on the path that needed it. New surfaces are where that bug
+comes back, so the constraint is written down rather than assumed.
+
+### 10.1 Order construction — `ExecutionEngine` only
+
+**Every `OrderRequest` must be built inside `execution/engine.py`.**
+
+Applies to surfaces not yet built: add/DCA (§19), entry updates (§20), partial
+closes, close-by-reply, and anything a later stage introduces. The leverage cap,
+sizing validation, stale-entry guard and kill switch all sit on that path — an
+order built elsewhere silently skips all four.
+
+Enforced: `test_order_requests_are_only_built_inside_the_engine`, plus
+`test_leverage_is_only_set_through_the_engine` for the account-state mutation
+Study B showed leaks between trades.
+
+### 10.2 Instruction admission — `SignalAdmission.admit` only
+
+**Every inbound instruction must pass admission before touching a trade.**
+
+Applies to `SL_UPDATE`, `ENTRY_UPDATE`, `ADD_POSITION`, `PARTIAL_CLOSE` and the
+`CLOSE_*` family when they are implemented. The spot boundary, whitelist,
+duplicate detection, one-trade-per-symbol and decision recording live there.
+
+New instruction types **extend `admit`**; they do not route around it.
+
+### 10.3 How to add a new order-creating feature
+
+1. Extend `SignalAdmission.admit` with the new instruction type's checks.
+2. Add the order-building method to `ExecutionEngine`.
+3. Register any new safety function in `tests/test_wiring.py::SAFETY_FUNCTIONS`.
+4. Run the suite — the wiring guard fails if the new mechanism has no caller.
+
+### 10.4 Detection is AST-based, not textual
+
+`tests/test_wiring.py` uses an AST call-graph, not regex. Regex produced two
+false negatives in this codebase (dotted `self.foo()` calls, and property reads
+which have no parentheses) — precisely the shapes safety mechanisms are invoked
+through. A backstop sharing the blind spots of the tool it replaces is not a
+backstop.
+
+Seven meta-tests pin the detector's behaviour: dotted calls, chained calls,
+property reads, properties used as calls, definitions, recursive self-calls,
+and names appearing only in strings or comments.

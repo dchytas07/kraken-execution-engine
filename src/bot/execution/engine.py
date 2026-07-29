@@ -137,6 +137,22 @@ class ExecutionEngine:
         Margin is split, not contracts: the two entries sit at different prices,
         so equal margin yields different sizes (brief 11).
 
+        ┌─ ORDER-CONSTRUCTION FUNNEL ─────────────────────────────────────┐
+        │ EVERY order that reaches the exchange MUST be built inside this  │
+        │ class. That includes surfaces not yet written: add/DCA (brief    │
+        │ 19), entry updates (brief 20), partial closes, and anything a    │
+        │ later stage introduces.                                          │
+        │                                                                  │
+        │ Do NOT construct an OrderRequest anywhere else. The leverage cap │
+        │ below, the sizing validation, the stale-entry guard and the kill │
+        │ switch all live on this path; a second construction site bypasses│
+        │ them silently. That is exactly how the 10x cap came to have zero │
+        │ call sites while passing five unit tests.                        │
+        │                                                                  │
+        │ Enforced by tests/test_wiring.py::                               │
+        │   test_order_requests_are_only_built_inside_the_engine           │
+        └──────────────────────────────────────────────────────────────────┘
+
         Takes the SIGNAL's requested leverage and caps it here. The parameter is
         deliberately named `signal_leverage` rather than `leverage`: the previous
         signature accepted an already-final value, and no caller applied the cap,

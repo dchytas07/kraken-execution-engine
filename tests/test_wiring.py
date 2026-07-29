@@ -18,7 +18,6 @@ whether the dangerous path invokes it. This test asserts the second thing.
 """
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -68,25 +67,71 @@ PENDING_WIRING = {
 }
 
 
+class _CallGraph:
+    """AST index of every call and attribute access in src/.
+
+    Deliberately NOT regex. Regex produced two false negatives in this codebase
+    already — it missed dotted calls (`self.foo()`) and property reads, which
+    are exactly the shapes safety mechanisms are invoked through. A backstop
+    that shares the blind spots of the tool it replaces is not a backstop.
+
+    Collected per node type:
+      * `calls`      — ast.Call whose func resolves to a name (bare or dotted)
+      * `attributes` — ast.Attribute NOT in call position, i.e. property reads
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.calls: dict[str, list[str]] = {}
+        self.attributes: dict[str, list[str]] = {}
+        self.defined: set[str] = set()
+        for path in sorted(root.rglob("*.py")):
+            self._index(path, root)
+
+    @staticmethod
+    def _callee(node: ast.Call) -> str | None:
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return None
+
+    def _index(self, path: Path, root: Path) -> None:
+        tree = ast.parse(path.read_text())
+        rel = str(path.relative_to(root))
+
+        # Map each node to the function it sits in, so a recursive self-call
+        # is not mistaken for an external call site.
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.defined.add(node.name)
+                for child in ast.walk(node):
+                    enclosing.setdefault(id(child), node.name)
+
+        # Attributes appearing as the func of a Call are calls, not reads.
+        call_funcs = {
+            id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)
+        }
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = self._callee(node)
+                if name and enclosing.get(id(node)) != name:
+                    self.calls.setdefault(name, []).append(f"{rel}:{node.lineno}")
+            elif isinstance(node, ast.Attribute) and id(node) not in call_funcs:
+                self.attributes.setdefault(node.attr, []).append(
+                    f"{rel}:{node.lineno}"
+                )
+
+
+GRAPH = _CallGraph(SRC)
+
+
 def _production_call_sites(name: str, *, is_property: bool = False) -> list[str]:
-    """Call sites in src/, excluding the definition itself."""
-    pattern = (
-        rf"(?:\.|\b){re.escape(name)}\b(?!\s*\()" if is_property
-        else rf"(?:\.|\b){re.escape(name)}\s*\("
-    )
-    hits = []
-    for path in SRC.rglob("*.py"):
-        text = path.read_text()
-        lines = text.splitlines()
-        for match in re.finditer(pattern, text):
-            lineno = text[: match.start()].count("\n") + 1
-            line = lines[lineno - 1].strip()
-            if line.startswith(("def ", "async def ", "@")):
-                continue
-            if is_property and (line.startswith(("def ", "async def "))):
-                continue
-            hits.append(f"{path.relative_to(SRC)}:{lineno}")
-    return hits
+    if is_property:
+        return GRAPH.attributes.get(name, [])
+    return GRAPH.calls.get(name, [])
 
 
 @pytest.mark.parametrize(
@@ -114,14 +159,10 @@ def test_safety_property_is_read_somewhere_in_production(name, requirement):
 
 def test_pending_wiring_entries_are_real_functions():
     """Stops PENDING_WIRING becoming a dumping ground for typos."""
-    defined = set()
-    for path in SRC.rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defined.add(node.name)
     for name in PENDING_WIRING:
-        assert name in defined, f"PENDING_WIRING names {name}, which does not exist"
+        assert name in GRAPH.defined, (
+            f"PENDING_WIRING names {name}, which does not exist"
+        )
 
 
 def test_pending_wiring_entries_are_still_actually_unwired():
@@ -139,11 +180,107 @@ def test_pending_wiring_entries_are_still_actually_unwired():
 
 
 def test_every_safety_function_actually_exists():
-    defined = set()
+    missing = [n for n in SAFETY_FUNCTIONS if n not in GRAPH.defined]
+    assert not missing, f"registered but undefined (renamed or deleted?): {missing}"
+
+
+# ==========================================================================
+# Meta-tests: the detector must handle the shapes regex got wrong
+# ==========================================================================
+
+
+def _graph_from(source: str, tmp_path):
+    (tmp_path / "m.py").write_text(source)
+    return _CallGraph(tmp_path)
+
+
+def test_detector_finds_dotted_method_calls(tmp_path):
+    """Regex false negative #1: `self.foo()` was missed by a `\\bfoo\\(` pattern."""
+    g = _graph_from("class A:\n    def go(self):\n        self.guarded()\n", tmp_path)
+    assert g.calls.get("guarded"), "dotted call not detected"
+
+
+def test_detector_finds_deeply_chained_calls(tmp_path):
+    g = _graph_from("def f(x):\n    return x.a.b.guarded()\n", tmp_path)
+    assert g.calls.get("guarded")
+
+
+def test_detector_finds_property_reads(tmp_path):
+    """Regex false negative #2: properties have no parentheses."""
+    g = _graph_from("def f(m):\n    return m.kind.is_executable_candidate\n", tmp_path)
+    assert g.attributes.get("is_executable_candidate")
+
+
+def test_detector_does_not_count_a_property_used_as_a_call(tmp_path):
+    g = _graph_from("def f(x):\n    return x.thing()\n", tmp_path)
+    assert not g.attributes.get("thing")
+    assert g.calls.get("thing")
+
+
+def test_detector_ignores_the_definition_itself(tmp_path):
+    g = _graph_from("def guarded():\n    return 1\n", tmp_path)
+    assert not g.calls.get("guarded"), "a definition is not a call site"
+
+
+def test_detector_ignores_recursive_self_calls(tmp_path):
+    """A function calling itself is not evidence anything else invokes it."""
+    g = _graph_from("def guarded(n):\n    return guarded(n - 1)\n", tmp_path)
+    assert not g.calls.get("guarded")
+
+
+def test_detector_ignores_names_inside_strings_and_comments(tmp_path):
+    """The failure mode of text matching: prose is not a call site."""
+    g = _graph_from(
+        'def f():\n    """we should call guarded() here"""\n'
+        '    x = "guarded()"  # guarded()\n    return x\n',
+        tmp_path,
+    )
+    assert not g.calls.get("guarded")
+
+
+# ==========================================================================
+# Order-construction funnel
+# ==========================================================================
+
+# Every order that reaches the exchange must be built inside the execution
+# engine, which is where the caps and guards live. A second construction site
+# would bypass them silently -- the same "correct in isolation, never wired"
+# failure, arriving through a new surface instead of an old one.
+ORDER_CONSTRUCTION_ALLOWED = {"execution/engine.py"}
+
+
+def test_order_requests_are_only_built_inside_the_engine():
+    offenders = []
     for path in SRC.rglob("*.py"):
+        rel = str(path.relative_to(SRC))
+        if rel in ORDER_CONSTRUCTION_ALLOWED or rel == "exchange/base.py":
+            continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defined.add(node.name)
-    missing = [n for n in SAFETY_FUNCTIONS if n not in defined]
-    assert not missing, f"registered but undefined (renamed or deleted?): {missing}"
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "OrderRequest":
+                    offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        f"OrderRequest built outside the engine at {offenders}. Every order must "
+        "route through ExecutionEngine so the leverage cap, sizing validation, "
+        "stale guard and kill switch cannot be bypassed. Add the new surface to "
+        "the engine rather than building orders beside it."
+    )
+
+
+def test_leverage_is_only_set_through_the_engine():
+    """set_leverage_preference mutates account state that outlives one trade
+    (Study B). Only the engine may call it, after applying the cap."""
+    allowed = {"execution/engine.py", "exchange/kraken.py", "exchange/base.py"}
+    offenders = []
+    for path in SRC.rglob("*.py"):
+        rel = str(path.relative_to(SRC))
+        if rel in allowed:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = _CallGraph._callee(node)
+                if name == "set_leverage_preference":
+                    offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, f"leverage set outside the engine at {offenders}"

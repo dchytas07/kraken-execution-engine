@@ -89,8 +89,27 @@ class SignalAdmission:
     def admit(
         self, parsed: ParsedMessage, message_row_id: int
     ) -> AdmissionResult:
-        """Run every admission check. Returns admitted=False with a reason, or
-        admitted=True meaning a trade may be created."""
+        """Run every admission check.
+
+        Returns admitted=False with a reason, or admitted=True meaning a trade
+        may be created.
+
+        ┌─ ADMISSION FUNNEL ──────────────────────────────────────────────┐
+        │ EVERY inbound instruction MUST pass through here before it can  │
+        │ create or modify a trade — including instruction types not yet  │
+        │ handled: SL_UPDATE, ENTRY_UPDATE, ADD_POSITION, PARTIAL_CLOSE   │
+        │ and the CLOSE_* family.                                         │
+        │                                                                 │
+        │ Do NOT add a second path that reaches the engine directly. The  │
+        │ spot boundary (brief 8), whitelist (brief 4), duplicate         │
+        │ detection (brief 23), one-trade-per-symbol and decision         │
+        │ recording (brief 7) all live here. A bypass re-creates the bug  │
+        │ where five safety mechanisms existed with no caller.            │
+        │                                                                 │
+        │ New instruction types extend THIS method. Order construction    │
+        │ then happens in ExecutionEngine — never in between.             │
+        └─────────────────────────────────────────────────────────────────┘
+        """
 
         # 1. Spot boundary FIRST (brief 8). Structural and unconditional: a
         #    spot message must never reach the leveraged path, whatever else it
