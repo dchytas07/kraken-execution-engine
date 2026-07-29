@@ -177,7 +177,32 @@ class SignalAdmission:
                 decision=ExecutionDecision.IGNORED,
             )
 
-        # 2. Only instruction types proceed.
+        # 2. A named-but-unsupported asset reports that specifically (brief 4:
+        #    log it, record it, make the reason visible). Checked before the
+        #    type check, because such a message classifies as UNKNOWN and would
+        #    otherwise be refused with the uninformative NOT_EXECUTABLE_TYPE.
+        from .parser.aliases import is_known_other_asset
+        from .parser.normalize import basic_normalize
+
+        if parsed.asset is None and is_known_other_asset(
+            basic_normalize(parsed.raw_text)
+        ):
+            return self._refuse(
+                message_row_id,
+                RejectionReason.UNSUPPORTED_ASSET,
+                "names a real asset that is not whitelisted",
+            )
+
+        # 3. An incomplete signal reports the missing fields, for the same
+        #    reason: it classifies as UNKNOWN, so the type check would mask it.
+        if parsed.parse_errors:
+            return self._refuse(
+                message_row_id,
+                RejectionReason.MISSING_FIELDS,
+                "; ".join(parsed.parse_errors),
+            )
+
+        # 4. Only instruction types proceed.
         if not parsed.message_type.is_executable_candidate:
             return self._refuse(
                 message_row_id,
@@ -190,15 +215,7 @@ class SignalAdmission:
                 ),
             )
 
-        # 3. Parser could not resolve required fields.
-        if parsed.parse_errors:
-            return self._refuse(
-                message_row_id,
-                RejectionReason.MISSING_FIELDS,
-                "; ".join(parsed.parse_errors),
-            )
-
-        # 4. Asset must resolve, and unambiguously — for instructions that
+        # 5. Asset must resolve, and unambiguously — for instructions that
         #    name an instrument. CLOSE_ALL / CLOSE_DIRECTION / CLOSE_REPLY are
         #    scoped by other means.
         if needs_asset and parsed.asset is None:

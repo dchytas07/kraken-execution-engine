@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-07-29T22:56:03.041635+00:00",
+  "duration_s": 120.0,
+  "verdict": "PASS",
+  "violations": [],
+  "expected_repairs": {},
+  "observed_repairs": {},
+  "unexplained_repairs": {},
+  "final_positions": {},
+  "final_trades": [
+    {
+      "id": 1,
+      "symbol": "PF_XBTUSD",
+      "state": "CANCELLED"
+    }
+  ],
+  "message_decisions": {
+    "IGNORED": 4,
+    "REJECTED": 2,
+    "REQUIRES_REVIEW": 1
+  },
+  "rejection_reasons": {
+    "SPOT_SIGNAL": 1,
+    "NOT_EXECUTABLE_TYPE": 4,
+    "GOLD_PINNED_OFF": 1,
+    "STALE_ENTRY": 1
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "kind": "start",
+      "detail": "soak begins; marks ['PF_XBTUSD=63861.07', 'PF_ETHUSD=1904.23', 'PF_SOLUSD=73.51']"
+    },
+    {
+      "t": 0.0,
+      "kind": "bot",
+      "detail": "started pid=22137"
+    },
+    {
+      "t": 21.0,
+      "kind": "inject",
+      "detail": "S1-spot (message 1)",
+      "message_id": 1
+    },
+    {
+      "t": 36.0,
+      "kind": "inject",
+      "detail": "S2-commentary (message 2)",
+      "message_id": 2
+    },
+    {
+      "t": 50.4,
+      "kind": "inject",
+      "detail": "S3-xrp (message 3)",
+      "message_id": 3
+    },
+    {
+      "t": 65.1,
+      "kind": "inject",
+      "detail": "S4-gold (message 4)",
+      "message_id": 4
+    },
+    {
+      "t": 71.4,
+      "kind": "kill",
+      "detail": "SIGKILLed bot; 0 orders resting"
+    },
+    {
+      "t": 81.4,
+      "kind": "inject",
+      "detail": "S5-incomplete (message 5)",
+      "message_id": 5
+    },
+    {
+      "t": 81.4,
+      "kind": "bot",
+      "detail": "started pid=22198"
+    },
+    {
+      "t": 81.4,
+      "kind": "restart",
+      "detail": "bot restarted; recovery will run"
+    },
+    {
+      "t": 95.8,
+      "kind": "inject",
+      "detail": "S6-ambiguous-close (message 6)",
+      "message_id": 6
+    },
+    {
+      "t": 110.3,
+      "kind": "inject",
+      "detail": "S7-stale (message 7)",
+      "message_id": 7
+    }
+  ]
+}
