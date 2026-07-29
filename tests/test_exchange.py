@@ -320,6 +320,82 @@ def test_amend_failure_reported_not_swallowed():
     assert a.amend_order("FP-3", size=Decimal("1")) is False
 
 
+# -- argv shape: positional vs flag ----------------------------------------
+# A cancel was originally emitted positionally, which the CLI rejects as an
+# unexpected argument. Mocks accepted it; only the live paper run caught it.
+# These pin the exact shape of every mutating command.
+
+
+def test_cancel_uses_order_id_flag_not_positional():
+    a = adapter({"futures paper cancel": {"action": "cancelled"}})
+    a.cancel_order("FP-00003")
+    argv = a.cli.calls[0]
+    assert "--order-id" in argv, "cancel takes --order-id, not a positional"
+    assert argv[argv.index("--order-id") + 1] == "FP-00003"
+    assert "FP-00003" not in argv[:argv.index("--order-id")]
+
+
+def test_edit_order_uses_order_id_flag():
+    a = adapter({"futures paper edit-order": {"action": "order_edited"}})
+    a.amend_order("FP-3", size=Decimal("1"))
+    assert "--order-id" in a.cli.calls[0]
+
+
+def test_set_leverage_uses_positional_args():
+    """set-leverage genuinely IS positional: <SYMBOL> [LEVERAGE].
+
+    Uses a CLI whose read-back changes after the set, so the mutation actually
+    fires — a matching preference is skipped by design.
+    """
+    class ChangingCli(ScriptedCli):
+        def __init__(self):
+            super().__init__({})
+            self.value = 3.0
+
+        def _route(self, argv, timeout):
+            self.calls.append(argv)
+            key = " ".join(a for a in argv[1:] if not a.startswith("-"))
+            if "set-leverage" in key:
+                self.value = 10.0
+                return 0, json.dumps({"action": "leverage_set"}), ""
+            if "leverage" in key:
+                return 0, json.dumps(
+                    {"leverage_preferences": {"PF_XBTUSD": self.value}}
+                ), ""
+            return 0, json.dumps({"error": "api", "message": key}), ""
+
+    a = KrakenCliAdapter(ChangingCli(), TradingMode.PAPER, V1_ASSETS)
+    assert a.set_leverage_preference("PF_XBTUSD", Decimal("10")) == Decimal("10")
+
+    call = next(c for c in a.cli.calls if "set-leverage" in c)
+    i = call.index("set-leverage")
+    assert call[i + 1] == "PF_XBTUSD"
+    assert call[i + 2] == "10"
+
+
+def test_order_uses_positional_symbol_and_size():
+    a = adapter({"futures paper buy": {"order_id": "FP-1", "status": "open", "fills": []}})
+    a.place_order(entry_request())
+    argv = a.cli.calls[0]
+    i = argv.index("buy")
+    assert argv[i + 1] == "PF_XBTUSD"
+    assert argv[i + 2] == "0.0023"
+
+
+def test_fills_parsed_from_both_engine_shapes():
+    a = adapter({
+        "futures paper fills": {
+            "fills": [{"id": "FP-2", "order_id": "FP-1", "client_order_id": "e1",
+                       "symbol": "PF_XBTUSD", "side": "long", "size": 0.0023,
+                       "price": 64598.0}]
+        }
+    })
+    fill = a.get_fills()[0]
+    assert fill.client_order_id == "e1"
+    assert fill.size == Decimal("0.0023")
+    assert fill.price == Decimal("64598.0")
+
+
 def test_mark_price_prefers_mark_over_last():
     a = adapter({"futures ticker": {"ticker": {"markPrice": 64601.7, "last": 64597}}})
     assert a.get_mark_price("PF_XBTUSD") == Decimal("64601.7")

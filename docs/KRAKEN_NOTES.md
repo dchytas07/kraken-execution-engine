@@ -428,3 +428,66 @@ Closed since first written:
   specifications; equals one size increment, derivable from the API. §4.1.1
 - ~~Whether a key-permission introspection endpoint exists~~ — confirmed
   negative across all 151 commands. §1.4.1
+
+---
+
+## 6. Fill observation (Stage 6)
+
+Status: **API-VERIFIED** (paper engine), 2026-07-29.
+
+### 6.1 `order-status` cannot distinguish filled from cancelled
+
+`futures paper order-status <ID>` searches **open orders only**. Querying a
+filled order returns:
+
+```json
+{"error":"validation","message":"Order 'FP-00001' not found in open orders"}
+```
+
+which is byte-identical to the response for a cancelled order, or for an id
+that never existed. So order status alone is unusable as a fill signal.
+
+`fills` carries both `order_id` and `client_order_id`, making it the
+authoritative record of what actually executed. Order state is therefore
+derived from two reads:
+
+| resting? | fills | derived status |
+|---|---|---|
+| yes | none | OPEN |
+| yes | some | PARTIALLY_FILLED |
+| no | == expected | FILLED |
+| no | 0 < partial | PARTIALLY_FILLED then removed |
+| no | none | **UNKNOWN** — cancelled / rejected / never placed |
+
+The last row is reported as UNKNOWN rather than CANCELLED: those three cases
+are indistinguishable from the API, and brief 40 requires reconciling instead
+of guessing.
+
+### 6.2 `cancel` takes `--order-id`, not a positional argument
+
+```
+kraken futures paper cancel FP-00003     -> error: unexpected argument
+kraken futures paper cancel --order-id FP-00003   -> ok
+```
+
+Same for live. This escaped the mocked adapter tests, which accepted either
+shape, and only failed in the paper integration run — where it left four TP
+orders resting after a close and correctly drove the trade to SAFE_ERROR
+rather than a false CLOSED.
+
+Argv shape is now pinned by tests for every mutating command. For reference:
+
+| Command | Shape |
+|---|---|
+| `cancel` | `--order-id <id>` |
+| `edit-order` | `--order-id <id>` |
+| `set-leverage` | positional `<SYMBOL> <LEVERAGE>` |
+| `order buy/sell` | positional `<SYMBOL> <SIZE>` |
+| `order-status` | positional `<ORDER_ID>` |
+
+### 6.3 Non-atomic reads in entry observation
+
+Per-order reads and the position read are separate calls, so an entry filling
+between them produces PARTIALLY_ENTERED alongside a full-size position. This
+errs conservative, protection is sized from the actual position, and repeated
+syncs converge — Stage 7's consistent snapshot removes it entirely.

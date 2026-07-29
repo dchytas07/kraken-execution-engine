@@ -18,6 +18,7 @@ from .base import (
     AccountState,
     ExchangeClient,
     ExchangeError,
+    Fill,
     InstrumentUnavailable,
     Order,
     OrderRequest,
@@ -202,6 +203,27 @@ class KrakenCliAdapter(ExchangeClient):
             status=_status(o.get("status")),
         )
 
+    def get_fills(self) -> list[Fill]:
+        data = self._run(*self._futures("fills"))
+        raw = data.get("fills", []) if isinstance(data, dict) else data
+        fills = []
+        for f in raw:
+            size = _dec(f.get("size"), Decimal(0)) or Decimal(0)
+            price = _dec(f.get("price"), Decimal(0)) or Decimal(0)
+            fills.append(
+                Fill(
+                    fill_id=str(f.get("id") or f.get("fill_id") or ""),
+                    order_id=str(f.get("order_id") or f.get("orderId") or "") or None,
+                    client_order_id=f.get("client_order_id") or f.get("cliOrdId"),
+                    symbol=f.get("symbol", ""),
+                    side=str(f.get("side", "")).lower(),
+                    size=size,
+                    price=price,
+                    filled_at=f.get("filled_at") or f.get("fillTime"),
+                )
+            )
+        return fills
+
     # -- leverage -----------------------------------------------------------
 
     def get_leverage_preference(self, symbol: str) -> Decimal | None:
@@ -303,8 +325,11 @@ class KrakenCliAdapter(ExchangeClient):
         )
 
     def cancel_order(self, exchange_order_id: str) -> bool:
+        # `cancel` takes --order-id, NOT a positional argument. Passing it
+        # positionally is a CLI arg error, which surfaced only in the live
+        # paper integration run — the mocked unit tests accepted either form.
         try:
-            self._run(*self._futures("cancel", exchange_order_id))
+            self._run(*self._futures("cancel", "--order-id", exchange_order_id))
             return True
         except ExchangeError:
             return False

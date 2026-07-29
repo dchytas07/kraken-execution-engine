@@ -66,6 +66,25 @@ class Order:
 
 
 @dataclass(frozen=True, slots=True)
+class Fill:
+    """A confirmed execution. The only trustworthy evidence that size moved.
+
+    `order-status` cannot serve this purpose: it searches open orders only, so
+    a filled order and a cancelled order both come back "not found". Fills are
+    therefore the authoritative record (docs/KRAKEN_NOTES.md 6).
+    """
+
+    fill_id: str
+    order_id: str | None
+    client_order_id: str | None
+    symbol: str
+    side: str
+    size: Decimal
+    price: Decimal
+    filled_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OrderRequest:
     """A request to place an order. Built by the execution engine."""
 
@@ -123,6 +142,10 @@ class ExchangeClient(ABC):
 
     @abstractmethod
     def get_open_orders(self) -> list[Order]: ...
+
+    @abstractmethod
+    def get_fills(self) -> list[Fill]:
+        """Confirmed executions. The authoritative fill record."""
 
     # -- leverage (per-symbol ACCOUNT STATE, not an order parameter) --------
 

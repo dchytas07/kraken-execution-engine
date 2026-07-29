@@ -28,3 +28,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 filterwarnings = ["error::DeprecationWarning"]
+markers = [
+    "unverifiable_in_paper: assertion the paper engine cannot prove (see docs/KRAKEN_NOTES.md 4.2)",
+]
