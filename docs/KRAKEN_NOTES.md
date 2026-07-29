@@ -142,6 +142,125 @@ Until Tests A–D are run, treat §1 as reasoned from documentation only.
 
 ---
 
+## 1B. Study A — XAUT vs spot-gold tracking error
+
+Status: **API-VERIFIED / MEASURED**, 2026-07-29. Verdict: **FAIL**.
+Consequence: GOLD/XAU stays unsupported; the v1 pin stays in place.
+
+### Method
+- Series 1: Kraken `XAUTUSD` spot hourly close (the perp's underlying),
+  721 points, 2026-06-29 10:00 → 2026-07-29 10:00 UTC.
+- Series 2: COMEX front-month gold `GC=F` hourly close (Yahoo), 490 points.
+- 490 overlapping hours. Basis = `(XAUT − gold) / gold × 100`.
+
+### Result
+
+| Metric | Measured | Tolerance | |
+|---|---|---|---|
+| median abs basis | 0.369% | — | |
+| p95 abs basis | 0.665% | — | |
+| **p99 abs basis** | **0.836%** | < 0.5% | ❌ FAIL |
+| max abs basis | 1.736% | — | |
+| median intra-hour change | 0.061% | — | |
+| p99 intra-hour change | 0.318% | — | ❌ over |
+| **max intra-hour change** | **1.417%** | < 0.25% | ❌ FAIL |
+
+Basis stdev 0.217%; range −1.736% … +0.107%.
+
+### Why this is not a measurement artifact
+
+Three checks, because condemning an instrument on a proxy artifact would be as
+bad as clearing it wrongly:
+
+1. **Not a constant futures premium.** GC=F carries a contango vs spot gold,
+   which would appear as a fixed offset. It does not explain the variance:
+   basis stdev is 0.217% and the range spans 1.84 percentage points. The
+   intra-hour-change metric is by construction immune to a steady offset.
+2. **Not a session-boundary gap.** Restricting to strictly consecutive hours
+   where both series traded continuously, the worst jump is still 1.417% and
+   p99 is still 0.318% — both over tolerance. The largest jump occurred at
+   2026-07-29 07:00 UTC, mid-session on a Wednesday.
+3. **Lower bound, not upper.** This measures XAUT *spot* vs gold. The perp adds
+   a further funding-driven basis on top, so true execution-venue tracking
+   error is worse than the figures above.
+
+Separately, 231 of 721 hours (32%) had XAUT trading while the gold market was
+closed — signal levels quoted against a closed market, executed against a live
+one.
+
+### Why it disqualifies GOLD
+
+`MAX_ENTRY_DEVIATION_PERCENT` defaults to 1.5%. A single observed intra-hour
+basis move of 1.417% would consume 94% of that entire stale-signal budget
+without the underlying asset moving at all. The guard would be measuring basis,
+not staleness. A stop placed at a spot-derived level sits at an unpredictable
+effective distance, and can be triggered by basis alone.
+
+### Verdict
+
+GOLD/XAU remains **unsupported**. `V1_GOLD_PIN_ACTIVE` stays `True`. This is now
+an empirical finding, not a precaution. Revisit only if Kraken lists a genuine
+spot XAU/USD perpetual — re-running this study against a different XAUT window
+is not sufficient grounds to enable it, because the failure is structural
+(separate instrument, separate liquidity, 24/7 vs session-bound).
+
+Raw series: `tests/fixtures/study_a_xaut_gold.json`.
+
+---
+
+## 1C. Study B — leverage state semantics
+
+Status: **API-VERIFIED** (paper engine), 2026-07-29. Both questions answered.
+
+### B(a) — does `set-leverage` affect an already-open position?
+
+**No.** Opened 0.0046 PF_XBTUSD at 10x (liq 59,285.72), then set leverage to
+5x. The position was unchanged: still `leverage: 10.0`, liq still 59,285.72.
+
+An add-on order to the *existing* position also retained the position's
+original 10x. So a position's leverage is fixed at open time.
+
+**Consequence:** `set-leverage` is safe to call while a position is open — it
+cannot silently re-margin live risk. Good news; it means leverage can be
+re-asserted freely during recovery and reconciliation.
+
+### B(b) — does leverage persist after the following order fails?
+
+**Yes — confirmed state leak.** Sequence:
+
+1. `set-leverage PF_XBTUSD 3` → succeeded.
+2. Next order call failed.
+3. `futures paper leverage` → `{"PF_XBTUSD": 3.0}`. The preference persisted.
+4. Closed the position so the symbol went flat.
+5. Opened a **new** position → it opened at **leverage 3.0**, liquidation
+   44,244.68 instead of ~59,300.
+
+A `set-leverage` that succeeded for a trade which never happened silently
+governed the *next* signal on that symbol. Margin and liquidation distance
+were both wrong relative to intent, with nothing in local state recording it.
+
+### Consequences for the design
+
+- Leverage is exchange state that drifts from local intent, exactly like orders
+  and positions. It is not a fire-and-forget parameter.
+- The adapter sets leverage as an explicit mutation: read → compare → mutate
+  only if different → **verify by reading back**.
+- Leverage must be set-and-verified immediately before opening each position,
+  never assumed from a previous call.
+- Reconciliation (Stage 7) compares on-account leverage per symbol against
+  intent and flags drift.
+- Recovery (Stage 8) re-asserts leverage for all whitelisted symbols before
+  permitting any order — a crash between `set-leverage` and the order is
+  exactly case (b). Safe to do because of B(a).
+
+### Caveat
+
+Measured on the paper engine. Kraken documents the same per-symbol preference
+model for live, and paper reproduced the documented behaviour, but B(a)/B(b)
+should be re-confirmed once live credentials exist. Recorded in §5.
+
+---
+
 ## 2. Instrument and product model
 
 Status: **API-VERIFIED** against kraken-cli 0.3.2 on 2026-07-29.
@@ -177,9 +296,61 @@ Status: **API-VERIFIED** (paper engine).
 
 ## 4. Known paper-vs-live fidelity gaps
 
-- `futures paper orders` omits `stop_price` (returns `price: null` on stops),
-  so stop trigger price cannot be verified in paper. Live `open-orders` is
-  expected to include it — **to be confirmed (Stage 4)**.
-- Live `futures order buy|sell` has no `--leverage` flag; paper does. Live
-  leverage is per-symbol account state via `set-leverage`.
-- No `--validate` dry-run flag on futures orders (spot only).
+### 4.1 🔴 Paper does NOT enforce the size increment
+
+Measured 2026-07-29. `PF_XBTUSD` has a 0.0001 size increment, yet the paper
+engine accepted and filled every one of:
+
+| Requested size | Increment | Paper result |
+|---|---|---|
+| 0.0001 BTC | 0.0001 | filled |
+| 0.00005 BTC | 0.0001 | **filled** (½ increment) |
+| 0.00001 BTC | 0.0001 | **filled** (1/10 increment) |
+| 0.000001 BTC | 0.0001 | **filled** (1/100 increment) |
+| 0.001 SOL | 0.01 | **filled** (1/10 increment) |
+
+Consequences, all of which shape the sizing engine:
+
+1. **Paper cannot validate rounding.** A sizing bug that emits a sub-increment
+   quantity passes silently in paper and would be rejected live. Increment
+   correctness must therefore be proven by unit tests against the spec, never
+   by "it worked in paper".
+2. **The exchange is not a safety net.** The sizing engine must enforce the
+   increment itself and refuse non-conforming sizes before submission
+   (brief 10, 45). We already planned this; this measurement makes it
+   mandatory rather than belt-and-braces.
+3. **No minimum order size was observable.** Because paper enforces nothing,
+   the real floor — whether an increment minimum, a min notional, or both —
+   remains unknown. Still outstanding, needs a deliberate live rejection.
+
+### 4.2 Paper omits `stop_price` on open orders
+
+`futures paper orders` returns `price: null` and no `stop_price` field even for
+stop orders, so a stop's trigger price cannot be read back in paper. One leg of
+the brief-16 verification (confirm the new stop has the correct trigger price)
+is therefore unverifiable in paper; size, existence, type and reduce-only are
+all verifiable. Live `open-orders` is expected to return `stopPrice` — **still
+unconfirmed, needs live credentials.**
+
+### 4.3 Leverage flag asymmetry
+
+Live `futures order buy|sell` has no `--leverage` flag; paper does. Live
+leverage is per-symbol account state via `set-leverage`. The adapter hides
+this by always setting the preference and never passing a per-order flag.
+
+### 4.4 No dry-run validation for futures
+
+`--validate` exists on spot orders only. Our DRY_RUN mode therefore stops at
+the adapter boundary and never spawns a subprocess — enforced by a constructor
+guard on `KrakenCliAdapter`.
+
+---
+
+## 5. Still outstanding before live
+
+| Item | Blocked on | Section |
+|---|---|---|
+| Withdrawal-permission tests A–D | operator creating test API keys | §1.6 |
+| Live `open-orders` returns `stopPrice` | live credentials | §4.2 |
+| Real minimum order size / min notional | live credentials (deliberate rejection) | §4.1 |
+| Re-confirm Study B on live | live credentials | §1C |
