@@ -55,11 +55,17 @@ class SignalAdmission:
         store: Store,
         kill_switch: KillSwitch,
         symbol_for: dict[CanonicalAsset, str] | None = None,
+        position_for=None,
     ) -> None:
         self.config = config
         self.store = store
         self.kill_switch = kill_switch
         self.symbol_for = symbol_for or {}
+        # Callable[[str], Position | None] — the LIVE exchange position for a
+        # symbol. Local state alone is not sufficient: Kraken nets per symbol,
+        # so a position the bot does not know about would silently merge with a
+        # new trade. See admit() step 7b.
+        self.position_for = position_for
 
     def _refuse(
         self,
@@ -189,9 +195,9 @@ class SignalAdmission:
                     decision=ExecutionDecision.DUPLICATE,
                 )
 
-        # 7. One active trade per symbol — Kraken nets positions, so two
-        #    concurrent trades on one symbol cannot be protected independently
-        #    (docs/PLAN.md 4.1).
+        # 7a. One active trade per symbol, from LOCAL state — Kraken nets
+        #     positions, so two concurrent trades on one symbol cannot be
+        #     protected independently (docs/PLAN.md 4.1).
         symbol = self.symbol_for.get(parsed.asset)
         if symbol and self.store.get_active_trade_for_symbol(symbol) is not None:
             return self._refuse(
@@ -201,6 +207,43 @@ class SignalAdmission:
                 "cannot be protected independently",
                 decision=ExecutionDecision.REQUIRES_REVIEW,
             )
+
+        # 7b. ...and from the EXCHANGE. Local state is not enough.
+        #
+        #     An orphan position — one the reconciler detects and deliberately
+        #     refuses to auto-close — has no local trade, so 7a would pass it.
+        #     Opening into it would net the two together, and every subsequent
+        #     decision would be wrong in both directions: the stop and TP ladder
+        #     would be sized against the COMBINED position (so the bot would
+        #     manage, and eventually close, a position it did not open), while
+        #     breakeven would be computed from OUR fills only (so the level
+        #     would be wrong for the merged position).
+        #
+        #     Refuse instead. An operator's manual position is not ours to
+        #     absorb.
+        if symbol and self.position_for is not None:
+            try:
+                position = self.position_for(symbol)
+            except Exception as exc:
+                # Cannot verify -> cannot trade (brief 40).
+                return self._refuse(
+                    message_row_id,
+                    RejectionReason.POSITION_CHECK_FAILED,
+                    f"could not read the live {symbol} position: {exc}",
+                )
+            if position is not None and not position.is_flat:
+                log.error(
+                    f"refusing {symbol}: an unrecognised position of "
+                    f"{position.size} exists on the exchange with no local trade",
+                    extra={"symbol": symbol, "action": "unrecognised_position"},
+                )
+                return self._refuse(
+                    message_row_id,
+                    RejectionReason.UNRECOGNISED_POSITION,
+                    f"{symbol} holds {position.size} on the exchange with no "
+                    "matching local trade; opening would net into it",
+                    decision=ExecutionDecision.REQUIRES_REVIEW,
+                )
 
         # 8. Kill switch, checked last so earlier refusals record their real
         #    reason rather than being masked by it.

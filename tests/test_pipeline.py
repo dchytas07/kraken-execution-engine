@@ -14,7 +14,7 @@ from bot.execution.engine import ExecutionEngine
 from bot.execution.observer import PollingFillObserver
 from bot.killswitch import KillSwitch
 from bot.models import CanonicalAsset, TradeState
-from bot.pipeline import SignalPipeline
+from bot.pipeline import SignalPipeline, build_admission
 from tests.test_execution import FakeExchange
 
 D = Decimal
@@ -54,8 +54,9 @@ def pipe(tmp_path):
     )
     pipeline = SignalPipeline(
         config=config, store=store,
-        admission=SignalAdmission(config=config, store=store, kill_switch=ks,
-                                  symbol_for=SYMBOLS),
+        admission=build_admission(config=config, store=store, kill_switch=ks,
+                                  client=exchange,
+                                  specs={CanonicalAsset.BTC: BTC}),
         engine=engine, specs={CanonicalAsset.BTC: BTC},
     )
     yield pipeline, store, exchange, ks

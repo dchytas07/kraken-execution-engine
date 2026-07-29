@@ -30,6 +30,29 @@ from .sizing import SizingError
 log = get_logger(__name__)
 
 
+def build_admission(
+    *,
+    config: Config,
+    store: Store,
+    kill_switch,
+    client,
+    specs: dict[CanonicalAsset, InstrumentSpec],
+) -> SignalAdmission:
+    """Construct the admission gate with BOTH state sources wired.
+
+    The single production construction point. `position_for` must be supplied:
+    local state alone cannot see an orphan position, and Kraken nets per symbol,
+    so opening into one would silently merge the two.
+    """
+    return SignalAdmission(
+        config=config,
+        store=store,
+        kill_switch=kill_switch,
+        symbol_for={asset: spec.symbol for asset, spec in specs.items()},
+        position_for=client.get_position,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class IngestResult:
     accepted: bool

@@ -1283,3 +1283,57 @@ def test_close_cancels_entry_orders_satisfying_brief_11(setup):
     entry_rows = store.orders_for_trade(trade_id, OrderPurpose.ENTRY)
     assert all(OrderStatus(r["status"]).is_final for r in entry_rows)
     assert exchange.get_open_orders() == []
+
+
+# ==========================================================================
+# Stop client-order-id sequencing must survive a restart
+# ==========================================================================
+
+
+def test_stop_sequence_is_derived_from_the_database_not_memory(setup, tmp_path):
+    """REGRESSION: an in-memory counter would reset on restart and collide
+    with a still-open stop from before the crash — reproducing the UNIQUE
+    constraint failure that left a position unprotected, via restart instead
+    of a live cycle."""
+    engine, exchange, store, trade_id, uid = setup
+    entered(engine, exchange, trade_id, uid)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+    first = store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)[0]
+    assert first["client_order_id"].endswith("-SL-1")
+
+    # Simulate a restart: brand-new engine and Store over the same file.
+    db_path = store.db_path
+    store.close()
+    reopened = Store(db_path)
+    fresh_engine = ExecutionEngine(
+        config=engine.config, store=reopened, client=exchange,
+        observer=PollingFillObserver(exchange, sleep=lambda s: None,
+                                     default_timeout_s=0.05, default_poll_s=0.0),
+        kill_switch=engine.kill_switch,
+    )
+    assert fresh_engine._next_stop_sequence(trade_id) == 2, \
+        "sequence did not survive the restart"
+
+    fresh_engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                            direction=Direction.LONG, trigger_price=D(62000),
+                            position=exchange.get_position("PF_XBTUSD"))
+    ids = [r["client_order_id"]
+           for r in reopened.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)]
+    assert len(ids) == len(set(ids)) == 2
+    assert ids[1].endswith("-SL-2")
+    reopened.close()
+
+
+def test_repeated_stop_placement_never_collides(setup):
+    engine, exchange, store, trade_id, uid = setup
+    entered(engine, exchange, trade_id, uid)
+    position = exchange.get_position("PF_XBTUSD")
+    for _ in range(4):
+        engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                          direction=Direction.LONG, trigger_price=D(62500),
+                          position=position)
+    ids = [r["client_order_id"]
+           for r in store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)]
+    assert len(ids) == len(set(ids)) == 4
