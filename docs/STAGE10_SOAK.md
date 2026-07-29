@@ -36,7 +36,7 @@ unsafe state.
 | I4 | No `client_order_id` appears **more than once** on the exchange |
 | I5 | Leverage preference is **10x** on every whitelisted symbol |
 | I6 | No trade sits in `SAFE_ERROR` that was not deliberately induced |
-| I7 | Every stored message has a **non-PENDING** decision, with a reason if refused |
+| I7 | Every stored message is **eventually** decided (non-PENDING within 60s), with a reason if refused. *Corrected after run 1: the original instantaneous form failed the bot for correct persist-before-parse behaviour (brief 31).* |
 | I8 | No position exists on a whitelisted symbol without a matching local trade (except the deliberately injected orphan) |
 
 ---
@@ -135,3 +135,25 @@ Stated so the result is not over-read:
 
 A passing soak means the system's own logic is internally consistent under
 sustained operation and a real crash. It does not mean it is ready for live.
+
+
+---
+
+## 7. Run history
+
+### Run 1 — 2026-07-30 — **FAIL**
+
+Two I7 violations and one real bug.
+
+* **Real bug:** `resolve_close_targets` enumerated which states were closeable
+  and omitted `REQUIRES_REVIEW`, so "close all" reported *nothing to close*
+  while a quarantined trade held 0.0046 BTC. Fixed at the root with a
+  deny-list (`not is_terminal`). The same allow-list pattern was found and
+  fixed in the reconciler's flat check, where it would have left a quarantined
+  trade's orders lingering forever.
+* **Criteria error, mine:** I7 was specified as an instantaneous invariant, but
+  the pipeline persists messages before parsing by design. Corrected to an
+  eventual property. Both violations were artifacts of the wrong criterion.
+* **Orphan visibility:** re-logged every cycle. Now loud on first sight and on
+  change, a reminder every 5th cycle, plus a standing unresolved-findings count
+  every cycle so it cannot go silent.

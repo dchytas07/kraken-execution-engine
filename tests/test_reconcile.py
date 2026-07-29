@@ -445,3 +445,119 @@ def test_loop_cycle_counter_advances(rig):
     loop.run_cycle()
     loop.run_cycle()
     assert loop.cycles == 2
+
+
+# ==========================================================================
+# Flat-check must be data-driven, not state-allow-listed (soak finding)
+# ==========================================================================
+
+
+def test_quarantined_trade_whose_position_vanished_is_finalised(rig):
+    """REGRESSION: the flat check used state.is_open, an allow-list omitting
+    REQUIRES_REVIEW, so a quarantined trade's stale orders lingered forever."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_and_fill(engine, exchange, trade_id, uid)
+    protect(engine, exchange, trade_id, uid)
+    store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
+    exchange.position = None
+
+    rec.run_once()
+    assert store.get_trade(trade_id)["state"] == TradeState.CLOSED.value
+    assert exchange.get_open_orders() == []
+
+
+def test_never_entered_trade_is_not_closed_by_the_flat_check(rig):
+    """The other direction: a trade that never held exposure is not 'gone'."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    engine.open_trade(
+        trade_id=trade_id, trade_uid=uid, spec=BTC,
+        plan=engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                                 entry_prices=ENTRIES, signal_leverage=D(10)),
+    )
+    rec.run_once()
+    assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
+    assert len(exchange.get_open_orders()) == 2
+
+
+# ==========================================================================
+# Orphan visibility: loud, then reduced — never silent (soak finding)
+# ==========================================================================
+
+
+def test_orphan_logs_loudly_on_first_sight(rig, caplog):
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    with caplog.at_level(logging.ERROR):
+        rec.run_once()
+    assert any("ORPHAN POSITION" in r.message for r in caplog.records)
+
+
+def test_orphan_does_not_log_every_cycle(rig, caplog):
+    """Logging every cycle buries real alerts."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    rec.run_once()
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        rec.run_once()
+        rec.run_once()
+    assert not [r for r in caplog.records if "ORPHAN POSITION" in r.message]
+
+
+def test_orphan_reminder_fires_so_it_cannot_go_silent(rig, caplog):
+    """And never fully silent: an unresolved orphan must not age out."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    rec.run_once()
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        for _ in range(rec.ORPHAN_REMINDER_EVERY):
+            rec.run_once()
+    assert any("ORPHAN POSITION" in r.message for r in caplog.records), \
+        "an unresolved orphan went completely silent"
+
+
+def test_unresolved_findings_reported_every_cycle(rig, caplog):
+    """A standing indicator, so nothing hides between reminders."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    rec.run_once()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        rec.run_once()
+    assert any("unresolved finding" in r.message for r in caplog.records)
+    assert rec.unresolved_findings
+
+
+def test_resolved_orphan_clears_the_finding(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    rec.run_once()
+    assert rec.unresolved_findings
+    exchange.positions.clear()
+    rec.run_once()
+    assert not rec.unresolved_findings
+
+
+def test_orphan_size_change_relogs_immediately(rig, caplog):
+    engine, exchange, store, rec, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.005"), entry_price=D(64000))
+    rec.run_once()
+    caplog.clear()
+    exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.009"), entry_price=D(64000))
+    with caplog.at_level(logging.ERROR):
+        rec.run_once()
+    assert any("ORPHAN POSITION" in r.message for r in caplog.records)

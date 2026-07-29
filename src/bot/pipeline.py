@@ -213,6 +213,25 @@ class SignalPipeline:
             return IngestResult(False, row_id, detail="ambiguous close target")
 
         if not targets:
+            # Guard against the failure this replaced: reporting "nothing to
+            # close" while the exchange holds a position is a false all-clear.
+            live = [f"{p.symbol} {p.size}"
+                    for p in self.engine.client.get_open_positions()
+                    if not p.is_flat]
+            if live:
+                log.error(
+                    f"close matched no trade, but the exchange holds "
+                    f"{', '.join(live)} — flagging rather than reporting "
+                    "'nothing to close'",
+                    extra={"action": "close_no_target_but_exposure"},
+                )
+                self.store.record_decision(
+                    row_id, ExecutionDecision.REQUIRES_REVIEW,
+                    RejectionReason.AMBIGUOUS_CLOSE_TARGET,
+                    f"no trade matched, but exposure remains: {', '.join(live)}",
+                )
+                return IngestResult(False, row_id,
+                                    detail=f"unmatched exposure: {live}")
             self.store.record_decision(
                 row_id, ExecutionDecision.IGNORED, None,
                 "no open trades matched the close instruction",
@@ -226,10 +245,24 @@ class SignalPipeline:
         outcomes = self.manager.close_trades(targets, percentage=percentage)
         confirmed = [t for t, ok in outcomes.items() if ok]
 
+        # Exposure this instruction did NOT close. An operator reading "close
+        # applied" must never infer "everything is flat" while positions remain
+        # — orphans are deliberately not auto-closed, and a close can fail.
+        remaining = [
+            f"{p.symbol} {p.size}" for p in self.engine.client.get_open_positions()
+            if not p.is_flat
+        ]
+        detail = (f"close applied to {len(targets)} trade(s); "
+                  f"{len(confirmed)} confirmed flat")
+        if remaining:
+            detail += f"; STILL OPEN: {', '.join(remaining)}"
+            log.error(
+                f"close instruction complete but exposure remains: "
+                f"{', '.join(remaining)}",
+                extra={"action": "close_incomplete"},
+            )
         self.store.record_decision(
-            row_id, ExecutionDecision.EXECUTED, None,
-            f"close applied to {len(targets)} trade(s); "
-            f"{len(confirmed)} confirmed flat",
+            row_id, ExecutionDecision.EXECUTED, None, detail,
         )
         return IngestResult(
             True, row_id,

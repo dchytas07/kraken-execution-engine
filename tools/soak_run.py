@@ -163,14 +163,19 @@ def check_invariants(ad: KrakenCliAdapter, store: Store, *, allow_orphan: set[st
             violate("I6", f"trade {t['id']} ({t['symbol']}) in SAFE_ERROR: "
                           f"{t['state_detail']}")
 
-    # I7
+    # I7 — an EVENTUAL property, not an instantaneous one. The pipeline
+    # persists the raw message before parsing (brief 31), so a PENDING window
+    # exists by design; the original criterion sampled inside it and failed the
+    # bot for correct behaviour. Only messages older than the grace window
+    # count.
     rows = store._conn.execute(
-        "SELECT channel_id, message_id, execution_decision, rejection_reason "
-        "FROM messages WHERE processed_at IS NULL AND execution_decision = 'PENDING'"
+        "SELECT channel_id, message_id, received_at FROM messages "
+        "WHERE execution_decision = 'PENDING' "
+        "AND received_at < datetime('now', '-60 seconds')"
     ).fetchall()
     stale = [f"{r['channel_id']}/{r['message_id']}" for r in rows]
     if stale:
-        violate("I7", f"messages with no decision: {stale}")
+        violate("I7", f"messages undecided after 60s: {stale}")
 
     # closed trades must be flat
     closed = store._conn.execute(
@@ -406,10 +411,16 @@ def main() -> int:
         ).fetchall()
     )
 
+    # A finding re-reported across cycles is one finding, not N. Repeats are
+    # deliberate (an unresolved orphan must not age out of visibility), so
+    # compare the SET of kinds, not their counts.
+    benign = {"FILL_NOT_RECORDED", "STOP_SIZE_MISMATCH"}
     unexplained = {
         k: observed_repairs[k] for k in observed_repairs
-        if k not in expected_repairs
-        and k not in ("FILL_NOT_RECORDED", "STOP_SIZE_MISMATCH")
+        if k.split()[0] not in expected_repairs
+        and k not in expected_repairs
+        and k.split()[0] not in benign and k not in benign
+        and not k.startswith("orphan position")
     }
 
     state["proc"].send_signal(signal.SIGTERM)

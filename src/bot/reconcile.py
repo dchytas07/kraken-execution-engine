@@ -245,6 +245,15 @@ class Reconciler:
         self.specs = specs
         self._symbols = [s.symbol for s in specs.values()]
         self._spec_by_symbol = {s.symbol: s for s in specs.values()}
+        # Orphan visibility. Logging every cycle buries real alerts; logging
+        # once and going quiet is worse — an unresolved orphan would age out of
+        # visibility and a glance at recent logs would read as "handled". So:
+        # loud on first sight and on any change, a reduced-frequency reminder
+        # after that, and a standing unresolved-findings count on every cycle.
+        self._orphan_seen: dict[str, tuple[Decimal, int]] = {}
+        self.unresolved_findings: dict[str, str] = {}
+
+    ORPHAN_REMINDER_EVERY = 5  # cycles
 
     def run_once(self) -> ReconcileReport:
         """One reconciliation pass over a single consistent snapshot."""
@@ -279,11 +288,20 @@ class Reconciler:
         # 1. Fills the local DB has not caught up with.
         self._sync_order_states(trade_id, snapshot, report)
 
-        # 2. Exchange says flat but we think the trade is live.
-        #    CLOSING is deliberately INCLUDED: a trade left mid-close by a crash
-        #    must be finalised, and in-process a flat position means the close
-        #    already succeeded. _repair_position_gone guards the transition.
-        if position is None and state.is_open:
+        # 2. Exchange says flat but the trade is not finished.
+        #
+        #    Data-driven, not state-driven. This used `state.is_open`, an
+        #    allow-list that omitted REQUIRES_REVIEW — so a quarantined trade
+        #    whose position vanished externally would never be finalised and
+        #    its orders would linger. But plain `not is_terminal` over-reaches
+        #    the other way and "closes" a trade that never entered.
+        #
+        #    The real question is not which state it is in, it is whether it
+        #    EVER held exposure. actual_quantity is only ever written from
+        #    exchange-confirmed fills, so a non-zero value means a position
+        #    existed and has now gone.
+        had_exposure = Decimal(trade["actual_quantity"]) > 0
+        if position is None and had_exposure and not state.is_terminal:
             report.discrepancies.append(
                 self._repair_position_gone(trade_id, symbol, state)
             )
@@ -531,26 +549,60 @@ class Reconciler:
         guess. Logged at ERROR so it cannot pass unnoticed.
         """
         known = {t["symbol"] for t in open_trades}
+        current: set[str] = set()
+
         for symbol, position in snapshot.positions.items():
             if position.is_flat or symbol in known:
                 continue
-            log.error(
-                f"ORPHAN POSITION: {symbol} holds {position.size} on the exchange "
-                "but no local trade matches it — not closing automatically",
-                extra={"symbol": symbol, "action": "orphan_position"},
+            current.add(symbol)
+
+            previous = self._orphan_seen.get(symbol)
+            if previous is None:
+                first_sight, count = True, 1
+            else:
+                prior_size, prior_count = previous
+                first_sight = position.size != prior_size  # size change = new news
+                count = prior_count + 1
+            self._orphan_seen[symbol] = (position.size, count)
+
+            self.unresolved_findings[f"orphan:{symbol}"] = (
+                f"{symbol} holds {position.size} with no local trade "
+                f"(unresolved for {count} cycle(s))"
             )
-            self.store.append_event(
-                EventType.RECONCILE_MISMATCH,
-                f"orphan position {symbol} {position.size}",
-                severity="ERROR",
-            )
+
+            # Loud on first sight or a size change; a reminder every Nth cycle
+            # after that, so it cannot go silent while still unresolved.
+            due_reminder = count % self.ORPHAN_REMINDER_EVERY == 0
+            if first_sight or due_reminder:
+                log.error(
+                    f"ORPHAN POSITION: {symbol} holds {position.size} on the "
+                    "exchange but no local trade matches it — not closing "
+                    f"automatically (unresolved for {count} cycle(s))",
+                    extra={"symbol": symbol, "action": "orphan_position",
+                           "cycles_unresolved": count},
+                )
+                self.store.append_event(
+                    EventType.RECONCILE_MISMATCH,
+                    f"orphan position {symbol} {position.size}",
+                    severity="ERROR",
+                )
+
+            # Always reported in the cycle result, regardless of log cadence.
             report.discrepancies.append(
                 Discrepancy(
                     DiscrepancyKind.ORPHAN_POSITION,
-                    f"{symbol} {position.size} with no local trade",
+                    f"{symbol} {position.size} with no local trade "
+                    f"(cycle {count})",
                     symbol=symbol,
                 )
             )
+
+        for symbol in list(self._orphan_seen):
+            if symbol not in current:
+                del self._orphan_seen[symbol]
+                self.unresolved_findings.pop(f"orphan:{symbol}", None)
+                log.info(f"orphan position on {symbol} is resolved",
+                         extra={"symbol": symbol, "action": "orphan_resolved"})
 
     def _check_leverage_drift(self, snapshot, report) -> None:
         """Study B: a set-leverage that succeeded for a trade which never
@@ -584,6 +636,15 @@ class Reconciler:
             )
 
     def _log_report(self, report: ReconcileReport) -> None:
+        # Standing count, emitted every cycle, so an unresolved finding cannot
+        # age out of visibility between reminder logs.
+        if self.unresolved_findings:
+            log.warning(
+                f"{len(self.unresolved_findings)} unresolved finding(s): "
+                + "; ".join(sorted(self.unresolved_findings.values())),
+                extra={"action": "unresolved_findings",
+                       "count": len(self.unresolved_findings)},
+            )
         if report.clean:
             log.debug("reconciliation clean", extra={"action": "reconcile_clean"})
             return

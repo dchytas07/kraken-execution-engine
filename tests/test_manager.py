@@ -309,3 +309,83 @@ def test_terminal_and_quarantined_trades_are_skipped(rig):
     manager, engine, exchange, store, trade_id, uid = rig
     store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
     assert manager.step(trade_id).actions == []
+
+
+# ==========================================================================
+# Close targeting must be a DENY-list (soak finding)
+# ==========================================================================
+
+
+def test_quarantined_trade_is_still_closeable(rig):
+    """REGRESSION from the Stage 10 soak.
+
+    resolve_close_targets enumerated which states were closeable and omitted
+    REQUIRES_REVIEW, so "close all" reported 'nothing to close' while a
+    quarantined trade held a real position. Quarantine stops the bot acting on
+    STRATEGY; it must never stop an operator acting on EXPOSURE.
+    """
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    manager.step(trade_id)
+    store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
+
+    assert manager.resolve_close_targets(close_all=True) == [trade_id]
+    assert manager.resolve_close_targets(symbol="PF_XBTUSD") == [trade_id]
+
+
+def test_safe_error_trade_is_still_closeable(rig):
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    manager.step(trade_id)
+    store.transition_trade(trade_id, TradeState.SAFE_ERROR)
+    assert manager.resolve_close_targets(close_all=True) == [trade_id]
+
+
+@pytest.mark.parametrize("state", [s for s in TradeState if not s.is_terminal])
+def test_every_non_terminal_state_is_closeable(rig, state):
+    """The property, not a list: closeable == not terminal.
+
+    Parametrised over the live state machine, so a state added later is
+    covered automatically — which is the whole point of a deny-list.
+    """
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    manager.step(trade_id)
+    current = TradeState(store.get_trade(trade_id)["state"])
+    if current is not state:
+        # Force the state; the transition table is exercised elsewhere.
+        with store.transaction() as conn:
+            conn.execute("UPDATE trades SET state = ? WHERE id = ?",
+                         (state.value, trade_id))
+    assert manager.resolve_close_targets(close_all=True) == [trade_id], \
+        f"{state.value} is non-terminal but was not closeable"
+
+
+@pytest.mark.parametrize("state", [s for s in TradeState if s.is_terminal])
+def test_terminal_states_are_not_closeable(rig, state):
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    manager.step(trade_id)
+    with store.transaction() as conn:
+        conn.execute("UPDATE trades SET state = ? WHERE id = ?",
+                     (state.value, trade_id))
+    assert manager.resolve_close_targets(close_all=True) == []
+
+
+def test_quarantined_trade_keeps_its_protection(rig):
+    """Quarantine suspends strategy, not protection."""
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
+
+    manager.step(trade_id)
+    assert len(stops(exchange)) == 1
+    assert stops(exchange)[0].size == exchange.get_position("PF_XBTUSD").size
+
+
+def test_quarantined_trade_gets_no_new_strategy_orders(rig):
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
+    manager.step(trade_id)
+    assert store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT) == []

@@ -94,7 +94,7 @@ class TradeManager:
         result = StepResult(trade_id=trade_id)
         trade = self.store.get_trade(trade_id)
         state = TradeState(trade["state"])
-        if state.is_terminal or state is TradeState.REQUIRES_REVIEW:
+        if state.is_terminal:
             return result
 
         symbol = trade["symbol"]
@@ -102,6 +102,18 @@ class TradeManager:
         if spec is None:
             return result
         direction = Direction(trade["direction"])
+
+        quarantined = state is TradeState.REQUIRES_REVIEW
+        if quarantined:
+            # Quarantine suspends STRATEGY, never PROTECTION. A trade whose
+            # state we cannot resolve still holds real exposure, so it keeps
+            # its stop; it just gets no new TPs, breakeven or auto-close.
+            position = self.engine.observer.observe_position(symbol)
+            if position and not position.is_flat:
+                if self.ensure_protected(trade_id, spec, direction, position):
+                    result.protected_this_step = True
+                    result.note("quarantined trade protected")
+            return result
 
         # 1. Observe fills. Returns the ACTUAL position.
         position = self.engine.sync_entry_fills(trade_id)
@@ -279,12 +291,17 @@ class TradeManager:
         relationship, then explicit symbol, then explicit direction, then an
         explicit 'all'.
         """
-        open_trades = self.store.open_trades()
-        live = [
-            t for t in open_trades
-            if TradeState(t["state"]).is_open or
-            TradeState(t["state"]) is TradeState.WAITING_FOR_ENTRY
-        ]
+        # DENY-list, deliberately. This previously enumerated which states
+        # were "closeable" (is_open or WAITING_FOR_ENTRY) and silently omitted
+        # REQUIRES_REVIEW — so a quarantined trade holding a real position was
+        # invisible to "close all", which then reported "nothing to close".
+        #
+        # An allow-list has to be kept in sync with the state machine by hand
+        # forever. A trade is closeable unless it is TERMINAL: quarantine stops
+        # the bot acting on strategy, it must never stop an operator acting on
+        # exposure. store.open_trades() already excludes the terminal states.
+        live = [t for t in self.store.open_trades()
+                if not TradeState(t["state"]).is_terminal]
         if not live:
             return []
 
