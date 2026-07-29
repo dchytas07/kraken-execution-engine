@@ -1,0 +1,30 @@
+[project]
+name = "kraken-signal-bot"
+version = "0.1.0"
+description = "Telegram signal -> Kraken Pro futures execution bot"
+requires-python = ">=3.12"
+dependencies = [
+    "telethon>=1.44.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["error::DeprecationWarning"]
