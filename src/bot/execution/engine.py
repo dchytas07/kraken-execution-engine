@@ -96,6 +96,29 @@ class ExecutionEngine:
         self.kill_switch = kill_switch
 
     # ------------------------------------------------------------------
+    # Danger signalling
+    # ------------------------------------------------------------------
+
+    def _enter_safe_error(self, trade_id: int, summary: str, **ctx) -> None:
+        """Record AND shout.
+
+        Writing an event row with severity=ERROR puts it in the database, which
+        nobody is watching in real time. Brief 32 requires dangerous
+        inconsistencies to be loud, so every SAFE_ERROR also emits a CRITICAL
+        log line — that is the channel an operator actually sees.
+        """
+        log.critical(
+            f"SAFE_ERROR trade {trade_id}: {summary}",
+            extra={"trade_id": trade_id, "action": "safe_error", **ctx},
+        )
+        self.store.append_event(
+            EventType.SAFETY_CHECK_FAILED, summary, trade_id=trade_id, severity="ERROR"
+        )
+        state = TradeState(self.store.get_trade(trade_id)["state"])
+        if state is not TradeState.SAFE_ERROR and not state.is_terminal:
+            self.store.transition_trade(trade_id, TradeState.SAFE_ERROR, summary)
+
+    # ------------------------------------------------------------------
     # Planning
     # ------------------------------------------------------------------
 
@@ -182,6 +205,11 @@ class ExecutionEngine:
                 "KILL_SWITCH_ACTIVE", "kill switch engaged; no new positions"
             )
 
+        # Brief 12 enforced on the execution path itself. Previously this lived
+        # only in a public method callers were trusted to invoke first, which
+        # made it an unenforced guard -- a stale signal would have executed.
+        self.check_entry_freshness(spec, tuple(p for p, _ in plan.entries))
+
         account = self.client.get_account_state()
         check_sufficient_margin(plan.total_intended_margin, account.available_margin)
 
@@ -262,18 +290,20 @@ class ExecutionEngine:
     def sync_entry_fills(self, trade_id: int) -> Position | None:
         """Observe entry orders and advance state on CONFIRMED fills only.
 
-        Known benign race: the per-order reads and the position read are not
-        atomic, so an entry that fills between them yields PARTIALLY_ENTERED
-        alongside a full-size position. Observed in paper 2026-07-29.
+        The stop is resized to the observed position on EVERY call, gated only
+        on a size mismatch and never on the label. That ordering matters: the
+        per-order reads and the position read are not atomic, so an entry that
+        fills between them yields PARTIALLY_ENTERED alongside a full-size
+        position (observed in paper 2026-07-29). If resizing were gated on
+        reaching FULLY_ENTERED, that window would leave the extra size
+        genuinely unprotected — an exposure gap, not a cosmetic lag.
 
-        This is safe and self-correcting, by design rather than by luck:
-          * it errs toward the MORE conservative state, never the less;
-          * protection is sized from `position` — the actual holding — so the
-            stop is correct even while the label lags;
-          * the next call promotes PARTIALLY_ENTERED to FULLY_ENTERED once the
-            orders read as done, so repeated syncs converge.
+        With resizing driven by the position rather than the label, the stale
+        label is harmless: it errs conservative, the stop always covers the
+        actual holding, and the next call promotes the label once the orders
+        read as done.
 
-        Making it atomic would need a single exchange snapshot, which is
+        Making the reads atomic requires a single exchange snapshot, which is
         Stage 7's job (reconciliation owns consistent state capture).
         """
         trade = self.store.get_trade(trade_id)
@@ -295,6 +325,10 @@ class ExecutionEngine:
         actual_size = position.size if position else Decimal(0)
 
         if actual_size > 0:
+            # Protection first, bookkeeping second. Driven by the observed
+            # position, never by the state label — see the docstring.
+            self.resize_stop_to_position(trade_id=trade_id, position=position)
+
             _, avg_entry = self._weighted_entry(entry_orders)
             self.store.update_trade_actuals(
                 trade_id,
@@ -411,21 +445,46 @@ class ExecutionEngine:
     def resize_stop_to_position(
         self, *, trade_id: int, position: Position
     ) -> bool:
-        """Keep the stop covering exactly the remaining position (brief 14)."""
+        """Keep the stop covering exactly the remaining position (brief 14).
+
+        A stop smaller than the position means part of the position is
+        unprotected, so a failed resize is a safety failure, not a no-op. It
+        escalates to SAFE_ERROR with a CRITICAL log rather than returning
+        quietly.
+        """
         stop = self._active_stop_row(trade_id)
         if stop is None:
+            # No stop yet — normal between the first fill and place_stop.
             return False
-        if Decimal(stop["quantity"]) == position.size:
+
+        current = Decimal(stop["quantity"])
+        if current == position.size:
             return True
+
         ok = self.client.amend_order(stop["exchange_order_id"], size=position.size)
-        if ok:
-            self.store.update_order(stop["id"], status=OrderStatus.OPEN)
-            with self.store.transaction() as conn:
-                conn.execute(
-                    "UPDATE orders SET quantity = ? WHERE id = ?",
-                    (str(position.size), stop["id"]),
-                )
-        return ok
+        if not ok:
+            self._enter_safe_error(
+                trade_id,
+                f"stop resize FAILED: stop covers {current} but the position is "
+                f"{position.size} — {position.size - current} is UNPROTECTED",
+                symbol=position.symbol,
+                order_id=stop["exchange_order_id"],
+            )
+            return False
+
+        self.store.update_order(stop["id"], status=OrderStatus.OPEN)
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE orders SET quantity = ? WHERE id = ?",
+                (str(position.size), stop["id"]),
+            )
+        self.store.append_event(
+            EventType.ORDER_ACCEPTED,
+            f"stop resized {current} -> {position.size} to match the position",
+            trade_id=trade_id,
+            order_id=stop["id"],
+        )
+        return True
 
     def move_stop_to_breakeven(
         self,
@@ -490,20 +549,26 @@ class ExecutionEngine:
         if not ok:
             self.store.append_event(
                 EventType.SL_REPLACEMENT_FAILED,
-                "amend failed; entering SAFE_ERROR with the ORIGINAL stop still "
-                "active (amend is atomic, so the position remains protected)",
+                "breakeven amend failed",
                 trade_id=trade_id,
                 order_id=stop["id"],
                 severity="ERROR",
             )
-            self.store.transition_trade(
-                trade_id, TradeState.SAFE_ERROR, "breakeven amend failed"
+            self._enter_safe_error(
+                trade_id,
+                "breakeven amend FAILED — the ORIGINAL stop is still active "
+                "(amend is atomic, so the position remains protected), but the "
+                "stop is no longer where strategy intends",
+                order_id=stop["exchange_order_id"],
             )
             return False
 
         if not self._verify_stop(trade_id, stop["exchange_order_id"], position.size):
-            self.store.transition_trade(
-                trade_id, TradeState.SAFE_ERROR, "stop verification failed"
+            self._enter_safe_error(
+                trade_id,
+                "stop verification FAILED after breakeven amend — cannot confirm "
+                "which stop is authoritative",
+                order_id=stop["exchange_order_id"],
             )
             return False
 
@@ -881,8 +946,11 @@ class ExecutionEngine:
                 trade_id=trade_id,
                 severity="ERROR",
             )
-            self.store.transition_trade(
-                trade_id, TradeState.SAFE_ERROR, "orders remain after close"
+            self._enter_safe_error(
+                trade_id,
+                f"{len(leftovers)} order(s) still resting after a confirmed-flat "
+                "close; refusing to mark CLOSED",
+                symbol=symbol,
             )
             return False
 

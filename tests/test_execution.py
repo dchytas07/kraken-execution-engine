@@ -986,3 +986,198 @@ def test_sync_entry_fills_is_idempotent(setup):
     engine.sync_entry_fills(trade_id)
     engine.sync_entry_fills(trade_id)
     assert store.get_trade(trade_id)["state"] == first
+
+
+# ==========================================================================
+# Protection must track the ACTUAL position, never the state label
+# ==========================================================================
+
+
+def test_stop_resized_on_every_sync_not_only_at_fully_entered(setup):
+    """REGRESSION: an exposure gap, not a cosmetic lag.
+
+    Entry 1 fills and the stop is placed for that size. When entry 2 fills the
+    position doubles. If resizing were gated on reaching FULLY_ENTERED, the
+    extra size would sit unprotected until the label caught up.
+    """
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    stop = next(o for o in exchange.get_open_orders() if o.order_type == "stop")
+    assert stop.size == plan.entries[0][1]
+
+    # Second entry fills; the stop must follow immediately.
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+
+    position = exchange.get_position("PF_XBTUSD")
+    stop = next(o for o in exchange.get_open_orders() if o.order_type == "stop")
+    assert stop.size == position.size, "position is not fully protected"
+    assert stop.size == plan.total_intended_size
+
+
+def test_stop_matches_position_mid_race_not_just_at_final_state(setup):
+    """The exposure window the race creates must still be fully protected.
+
+    Reproduces the non-atomic-read race: the label lands on PARTIALLY_ENTERED
+    while the position is already full size. The stop must cover the FULL
+    position at that moment, not the smaller size the label implies.
+    """
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    # Entry 2 fills between the order reads and the position read.
+    real_get_position = exchange.get_position
+    fired = {"done": False}
+
+    def racing_get_position(symbol):
+        if not fired["done"]:
+            fired["done"] = True
+            exchange.fill(coids[1], plan.entries[1][1], D(63500))
+        return real_get_position(symbol)
+
+    exchange.get_position = racing_get_position
+    engine.sync_entry_fills(trade_id)
+    exchange.get_position = real_get_position
+
+    # The label never claims FULLY_ENTERED here — it stays where protection put
+    # it. What matters is that the stop already covers the FULL position.
+    assert store.get_trade(trade_id)["state"] != TradeState.FULLY_ENTERED.value
+    position = exchange.get_position("PF_XBTUSD")
+    stop = next(o for o in exchange.get_open_orders() if o.order_type == "stop")
+    assert position.size == plan.total_intended_size  # race landed the full fill
+    assert stop.size == position.size, "UNPROTECTED size during the race window"
+
+
+def test_failed_stop_resize_is_loud_and_enters_safe_error(setup, caplog):
+    """A stop that cannot be resized leaves the position under-protected."""
+    import logging
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    exchange.amend_fails = True
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+
+    with caplog.at_level(logging.CRITICAL):
+        engine.sync_entry_fills(trade_id)
+
+    assert store.get_trade(trade_id)["state"] == TradeState.SAFE_ERROR.value
+    assert any("UNPROTECTED" in r.message for r in caplog.records)
+
+
+# ==========================================================================
+# SAFE_ERROR must reach an operator, not just the database
+# ==========================================================================
+
+
+def test_safe_error_emits_critical_log(setup, caplog):
+    import logging
+    engine, exchange, store, trade_id, uid = setup
+    protected(engine, exchange, trade_id, uid)
+    reach_tp2(store, trade_id)
+    exchange.amend_fails = True
+
+    with caplog.at_level(logging.CRITICAL):
+        engine.move_stop_to_breakeven(
+            trade_id=trade_id, spec=BTC, direction=Direction.LONG,
+            position=exchange.get_position("PF_XBTUSD"),
+        )
+
+    criticals = [r for r in caplog.records if r.levelno >= logging.CRITICAL]
+    assert criticals, "SAFE_ERROR must surface at CRITICAL, not only in the DB"
+    assert any("SAFE_ERROR" in r.message for r in criticals)
+    assert any(getattr(r, "trade_id", None) == trade_id for r in criticals)
+
+
+def test_leftover_orders_after_close_logs_critical(setup, caplog):
+    import logging
+    engine, exchange, store, trade_id, uid = setup
+    protected(engine, exchange, trade_id, uid)
+    exchange.cancel_fails = True
+
+    original_place = exchange.place_order
+    def place_and_fill(request):
+        result = original_place(request)
+        if request.purpose is OrderPurpose.CLOSE:
+            exchange.fill(request.client_order_id, request.size, D(65000))
+        return result
+    exchange.place_order = place_and_fill
+
+    with caplog.at_level(logging.CRITICAL):
+        assert engine.close_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                                  direction=Direction.LONG) is False
+
+    assert any(r.levelno >= logging.CRITICAL for r in caplog.records)
+
+
+# ==========================================================================
+# Stale-signal guard, end to end through open_trade (brief 12)
+# ==========================================================================
+
+
+def test_stale_signal_refused_end_to_end_and_places_no_orders(setup):
+    """The guard must be ON the execution path, not a method callers may skip."""
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    exchange.mark = D(70000)  # far above the 64000/63500 range
+
+    with pytest.raises(ExecutionRefused, match="STALE_ENTRY"):
+        engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+
+    assert exchange.orders == {}, "a stale signal must place NO orders"
+    assert store.orders_for_trade(trade_id) == []
+    assert store.get_trade(trade_id)["state"] == TradeState.VALIDATED.value
+
+
+def test_stale_signal_below_range_also_refused(setup):
+    engine, exchange, store, trade_id, uid = setup
+    exchange.mark = D(55000)
+    with pytest.raises(ExecutionRefused, match="STALE_ENTRY"):
+        engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                          plan=planned(engine))
+    assert exchange.orders == {}
+
+
+def test_fresh_signal_proceeds_end_to_end(setup):
+    engine, exchange, store, trade_id, uid = setup
+    exchange.mark = D(63800)  # inside the range
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                              plan=planned(engine))
+    assert len(coids) == 2
+    assert store.get_trade(trade_id)["state"] == TradeState.WAITING_FOR_ENTRY.value
+
+
+def test_deviation_just_within_tolerance_proceeds(setup):
+    """1.5% tolerance: 64000 * 1.014 is inside, so it must execute."""
+    engine, exchange, store, trade_id, uid = setup
+    exchange.mark = D(64000) * D("1.014")
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=planned(engine))
+    assert len(exchange.orders) == 2
+
+
+def test_deviation_just_beyond_tolerance_refused(setup):
+    engine, exchange, store, trade_id, uid = setup
+    exchange.mark = D(64000) * D("1.016")
+    with pytest.raises(ExecutionRefused, match="STALE_ENTRY"):
+        engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                          plan=planned(engine))
