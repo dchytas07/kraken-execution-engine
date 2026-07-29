@@ -93,6 +93,32 @@ Two consequences:
    withdrawal, which we will never do. **The futures key's withdrawal
    capability cannot be verified via the API at all.**
 
+#### 1.4.1 Confirmed negative: no key-permission introspection endpoint exists
+
+The conclusion above was originally inferred from withdrawal-specific docs. It
+has since been checked directly against the whole API surface, rather than
+assumed:
+
+- **Full command catalog searched.** kraken-cli's `agents/tool-catalog.json`
+  enumerates all **151** commands with parameter schemas. Searching the entire
+  document for `permission`, `access level`, `accessLevel`, `key info`,
+  `scope`, `privilege` and `introspect` returns **zero occurrences**.
+- **Nearest candidates inspected and rejected.** `futures accounts` returns
+  wallet balances and margin state, not key metadata. `futures notifications`
+  returns account notices. `futures subaccount-status` returns a *subaccount's*
+  trading-enabled flag, which is an account setting, not the authenticating
+  key's permission set.
+- **Docs agree.** Kraken's Futures API introduction lists capability categories
+  with no key-introspection endpoint; its account endpoints are described as
+  returning balances and PnL only.
+
+So no "what can this key do?" endpoint exists on Kraken Futures, for withdrawal
+scope or anything else. **The attestation approach stands, on a confirmed
+negative rather than an inference.**
+
+Source: <https://docs.kraken.com/api/docs/guides/futures-introduction/> and
+kraken-cli `agents/tool-catalog.json` (151 commands, v0.3.2).
+
 ### 1.5 What the check does now, given the above
 
 Brief 25 requires refusing to start if withdrawal permission is present *or
@@ -319,9 +345,51 @@ Consequences, all of which shape the sizing engine:
    increment itself and refuse non-conforming sizes before submission
    (brief 10, 45). We already planned this; this measurement makes it
    mandatory rather than belt-and-braces.
-3. **No minimum order size was observable.** Because paper enforces nothing,
-   the real floor — whether an increment minimum, a min notional, or both —
-   remains unknown. Still outstanding, needs a deliberate live rejection.
+3. **No minimum order size was observable in paper** — because paper enforces
+   nothing. Resolved from documentation instead; see §4.1.1.
+
+### 4.1.1 Minimum order size — RESOLVED (doc-verified)
+
+The `instruments` endpoint carries **no** minimum-size field. Verified
+exhaustively: all **294** instruments, **82** distinct key paths, zero matches
+for `min`, `notional`, `qty`, `quantity`, `lot`, `amount` or `order`. The only
+size-related fields are `contractSize`, `tickSize`, `impactMidSize` and
+`maxPositionSize` (a maximum, not a minimum).
+
+Kraken publishes the minimums in the linear multi-collateral contract
+specifications instead:
+
+| Contract | Published min order size | `10^-contractValueTradePrecision` | Match |
+|---|---|---|---|
+| PF_XBTUSD | 0.0001 BTC | 0.0001 | ✅ |
+| PF_ETHUSD | 0.001 ETH | 0.001 | ✅ |
+| PF_SOLUSD | 0.01 SOL | 0.01 | ✅ |
+
+**The minimum order size is exactly one size increment.** The Stage 1 working
+assumption was correct, and is now doc-confirmed rather than assumed.
+
+This matters more than it looks: it means the minimum is *derivable from a
+field the API does return*, so the sizing engine computes it dynamically from
+`contractValueTradePrecision` rather than hardcoding a per-symbol table. No
+instrument-specific constants are needed, and a newly listed instrument gets a
+correct floor automatically.
+
+**No minimum notional exists** for these contracts — the specifications state
+minimums in base-currency units only. Maximum individual order value is
+$20,000,000, far above anything a $30-margin bot can produce.
+
+Source:
+<https://support.kraken.com/articles/4844359082772-linear-multi-collateral-derivatives-contract-specifications>
+
+Caveat: doc-verified, not API-verified, and the identity min == increment
+should be spot-checked live. But it is no longer *blocked* on live credentials,
+and a wrong assumption here would now fail closed (we would reject an order
+Kraken might have accepted) rather than submitting an invalid one.
+
+Note: the "futures trade in whole contracts only" rule found in Kraken's
+support docs applies to **inverse and fixed-maturity** contracts (`PI_`, `FI_`),
+not to the `PF_` flexible futures traded here. Empirically confirmed: a
+0.0046 BTC `PF_XBTUSD` order filled at exactly that size.
 
 ### 4.2 Paper omits `stop_price` on open orders
 
@@ -352,5 +420,11 @@ guard on `KrakenCliAdapter`.
 |---|---|---|
 | Withdrawal-permission tests A–D | operator creating test API keys | §1.6 |
 | Live `open-orders` returns `stopPrice` | live credentials | §4.2 |
-| Real minimum order size / min notional | live credentials (deliberate rejection) | §4.1 |
 | Re-confirm Study B on live | live credentials | §1C |
+| Spot-check min size == increment live | live credentials (non-blocking) | §4.1.1 |
+
+Closed since first written:
+- ~~Real minimum order size / min notional~~ — resolved from contract
+  specifications; equals one size increment, derivable from the API. §4.1.1
+- ~~Whether a key-permission introspection endpoint exists~~ — confirmed
+  negative across all 151 commands. §1.4.1
