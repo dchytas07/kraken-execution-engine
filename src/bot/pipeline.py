@@ -18,12 +18,14 @@ from .logging_setup import get_logger
 from .models import (
     CanonicalAsset,
     Direction,
+    MessageType,
     EventType,
     ExecutionDecision,
     InstrumentSpec,
     RejectionReason,
     TradeState,
 )
+from .execution.manager import TradeManager
 from .parser.parse import fingerprint_for, parse_message
 from .sizing import SizingError
 
@@ -70,12 +72,14 @@ class SignalPipeline:
         admission: SignalAdmission,
         engine: ExecutionEngine,
         specs: dict[CanonicalAsset, InstrumentSpec],
+        manager: TradeManager | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.admission = admission
         self.engine = engine
         self.specs = specs
+        self.manager = manager
 
     def handle_message(
         self,
@@ -150,7 +154,88 @@ class SignalPipeline:
         if verdict.refused:
             return IngestResult(False, row_id, detail=verdict.detail)
 
-        return self._open_from_signal(parsed, row_id)
+        if parsed.message_type is MessageType.NEW_SIGNAL:
+            return self._open_from_signal(parsed, row_id)
+        if parsed.message_type.is_exit_like:
+            return self._handle_exit(parsed, row_id)
+
+        # Admitted instruction types with no handler yet (SL_UPDATE,
+        # ENTRY_UPDATE, ADD_POSITION). Recorded for review rather than silently
+        # dropped, and explicitly NOT executed (brief 19, 20).
+        self.store.record_decision(
+            row_id,
+            ExecutionDecision.REQUIRES_REVIEW,
+            RejectionReason.NOT_EXECUTABLE_TYPE,
+            f"{parsed.message_type.value} is recognised but not yet executable; "
+            "flagged for manual review",
+        )
+        return IngestResult(False, row_id, detail="instruction type not implemented")
+
+    def _handle_exit(self, parsed, row_id: int) -> IngestResult:
+        """Route a close-family instruction (brief 17, 18, 21).
+
+        The target must be determinable. If it is not, nothing closes —
+        a wrong close is worse than a missed one.
+        """
+        if self.manager is None:
+            self.store.record_decision(
+                row_id, ExecutionDecision.REQUIRES_REVIEW,
+                RejectionReason.NOT_EXECUTABLE_TYPE,
+                "no trade manager wired; close not executed",
+            )
+            return IngestResult(False, row_id, detail="no manager")
+
+        symbol = None
+        if parsed.asset is not None:
+            spec = self.specs.get(parsed.asset)
+            symbol = spec.symbol if spec else None
+
+        targets = self.manager.resolve_close_targets(
+            symbol=symbol,
+            direction=parsed.direction
+            if parsed.message_type is MessageType.CLOSE_DIRECTION else None,
+            reply_to_message_id=parsed.referenced_message_id
+            if parsed.message_type is MessageType.CLOSE_REPLY else None,
+            close_all=parsed.message_type is MessageType.CLOSE_ALL,
+        )
+
+        if targets is None:
+            self.store.record_decision(
+                row_id, ExecutionDecision.REQUIRES_REVIEW,
+                RejectionReason.AMBIGUOUS_CLOSE_TARGET,
+                "close instruction could not be tied to a specific trade; "
+                "refusing to guess (brief 21)",
+            )
+            log.error(
+                "ambiguous close refused: target could not be determined",
+                extra={"message_id": row_id, "action": "ambiguous_close"},
+            )
+            return IngestResult(False, row_id, detail="ambiguous close target")
+
+        if not targets:
+            self.store.record_decision(
+                row_id, ExecutionDecision.IGNORED, None,
+                "no open trades matched the close instruction",
+            )
+            return IngestResult(False, row_id, detail="nothing to close")
+
+        percentage = (
+            parsed.percentage
+            if parsed.message_type is MessageType.PARTIAL_CLOSE else None
+        )
+        outcomes = self.manager.close_trades(targets, percentage=percentage)
+        confirmed = [t for t, ok in outcomes.items() if ok]
+
+        self.store.record_decision(
+            row_id, ExecutionDecision.EXECUTED, None,
+            f"close applied to {len(targets)} trade(s); "
+            f"{len(confirmed)} confirmed flat",
+        )
+        return IngestResult(
+            True, row_id,
+            trade_id=targets[0] if targets else None,
+            detail=f"{len(confirmed)}/{len(targets)} confirmed flat",
+        )
 
     def _open_from_signal(self, parsed, row_id: int) -> IngestResult:
         spec = self.specs.get(parsed.asset)
@@ -224,6 +309,11 @@ class SignalPipeline:
                 extra={"trade_id": trade_id, "action": "open_refused"},
             )
             return IngestResult(False, row_id, trade_id, str(exc))
+
+        # Same-cycle protection: an entry that filled immediately must be
+        # protected now, not on the next reconciliation cycle.
+        if self.manager is not None:
+            self.manager.step(trade_id)
 
         self.store.record_decision(row_id, ExecutionDecision.EXECUTED)
         return IngestResult(True, row_id, trade_id)

@@ -74,6 +74,19 @@ SAFETY_FUNCTIONS = {
     # actually refuses startup in live mode, and it was never registered.
     "enforce": "brief 25 — refuse startup on a failed safety check",
     "_refuse": "brief 7 — every refusal carries an enumerated reason",
+    # The forward lifecycle. Every one of these had ZERO production call sites
+    # until TradeManager existed: the TP ladder was never placed, TP fills were
+    # never observed, breakeven never fired, and closes never executed. They
+    # are registered individually so a future refactor cannot quietly drop one.
+    "place_stop": "brief 14 — protective stop, placed same-cycle as the fill",
+    "place_take_profits": "brief 13 — TP ladder",
+    "sync_entry_fills": "brief 27 — advance on CONFIRMED entry fills only",
+    "sync_take_profits": "brief 15 — advance on CONFIRMED TP fills only",
+    "move_stop_to_breakeven": "brief 15/16 — atomic breakeven amend",
+    "close_trade": "brief 27 — close with flat confirmation",
+    "ensure_protected": "same-cycle protection guarantee",
+    "ensure_take_profits": "brief 13 — place the ladder once, from intent",
+    "step": "the forward lifecycle driver",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -394,36 +407,130 @@ NOT_SAFETY_MECHANISMS = {
     "build_admission": "construction, asserted by its own test",
 }
 
-# Name shapes that suggest a guard rather than plumbing.
-_SAFETY_SHAPED = re.compile(
-    r"^_?(check|verify|validate|guard|enforce|refuse|repair|resolve|recover|"
-    r"admit|require|ensure|assert)_?", re.I
+# ==========================================================================
+# Exhaustive enumeration of the critical modules — default DENY
+# ==========================================================================
+#
+# Pattern matching failed three times in this build, each time in a new
+# dimension:
+#
+#   1. regex missed dotted calls — `self.foo()` vs `\bfoo\(`
+#   2. regex missed property reads — no parentheses to match
+#   3. a guard-verb prefix list missed ACTION verbs — place_take_profits,
+#      close_trade and move_stop_to_breakeven had ZERO production call sites
+#      while the guard passed, because "place" is not "check"
+#
+# Each fix patched the specific miss and left the approach intact: guess which
+# names matter. The approach is the defect. Every function in the critical
+# modules is now enumerated and must be explicitly accounted for — registered
+# so its call site is verified, or excused with a stated reason. A new function
+# with no decision recorded FAILS. Silence is not consent.
+
+CRITICAL_MODULES = (
+    "execution/engine.py",
+    "execution/manager.py",
+    "reconcile.py",
+    "recovery.py",
+    "admission.py",
+    "pipeline.py",
 )
 
+# Functions in CRITICAL_MODULES deliberately not tracked as safety mechanisms.
+# Each entry is a decision on the record, not an oversight.
+EXCUSED_IN_CRITICAL_MODULES = {
+    # constructors / plumbing
+    "__init__": "constructor",
+    "build_admission": "construction; asserted by its own test",
+    # data accessors, no behaviour
+    "refused": "AdmissionResult accessor",
+    "repaired": "ReconcileReport accessor",
+    "unrepaired": "ReconcileReport accessor",
+    "clean": "ReconcileReport accessor",
+    "ambiguous": "RecoveryResult accessor",
+    "safe_to_trade": "RecoveryResult accessor",
+    "note": "StepResult accessor",
+    "capture": "ExchangeSnapshot constructor",
+    "order_by_client_id": "snapshot accessor",
+    "fills_for": "snapshot accessor",
+    "observe_order": "FillObserver protocol method",
+    "observe_position": "FillObserver protocol method",
+    "weighted_average_entry": "FillObserver optional method",
+    # transitively covered, with the covering caller named
+    "plan_entries": "called by _open_from_signal; the leverage cap it applies is "
+                    "registered separately as effective_leverage",
+    "open_trade": "called by _open_from_signal <- handle_message",
+    "reassert_leverage": "sole leverage-mutation path; set_leverage_preference registered",
+    "client_order_id": "pure id derivation, no side effects",
+    "step_all": "loop wrapper over step",
+    "resolve_close_targets": "called by _handle_exit",
+    "close_trades": "called by _handle_exit",
+    "active_stop_exists": "called by ensure_protected",
+    "run_cycle": "loop wrapper over run_once",
+    "run_forever": "loop wrapper",
+    "stop": "loop shutdown",
+    "handle_line": "called by the fill-stream reader",
+    "start": "stream lifecycle",
+    "_on_fill": "stream callback; wakes the loop only",
+    "_log_report": "logging only",
+    "_log_intent": "logging only",
+    "_order_verb": "command-shape helper",
+    "_next_stop_sequence": "id sequencing; covered by place_stop tests",
+    "_next_close_sequence": "id sequencing",
+    "_active_stop_row": "lookup helper",
+    "_weighted_entry": "lookup helper",
+    "_persist_observation": "store write helper",
+    "_advance_tp_state": "called by sync_take_profits",
+    "_finalise_close": "called by close_trade",
+    "_reconcile_trade": "called by run_once",
+    "_open_from_signal": "called by handle_message",
+    "_handle_exit": "called by handle_message",
+    "_reason_for": "error-mapping helper",
+    "_resolve_trade_intents": "registered",
+    "_run": "FillStream reader thread body; handle_line is what parses",
+    # The one genuine redundancy. _finalise_close already cancels EVERY order
+    # purpose including entries, proven by
+    # test_close_cancels_entry_orders_satisfying_brief_11. Kept as a public
+    # helper for operator tooling.
+    "cancel_remaining_entries": "superseded by _finalise_close; retained for tooling",
+}
 
-def test_registry_has_not_fallen_behind_the_codebase():
-    """Every safety-shaped function is registered or explicitly excused."""
-    unaccounted = []
-    for path in SRC.rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            name = node.name
-            if not _SAFETY_SHAPED.match(name):
-                continue
-            if name in SAFETY_FUNCTIONS or name in SAFETY_PROPERTIES:
-                continue
-            if name in NOT_SAFETY_MECHANISMS:
-                continue
-            unaccounted.append(f"{path.relative_to(SRC)}:{name}")
 
+def _functions_in(module: str) -> list[str]:
+    tree = ast.parse((SRC / module).read_text())
+    return sorted({
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    })
+
+
+@pytest.mark.parametrize("module", CRITICAL_MODULES)
+def test_every_function_in_a_critical_module_is_accounted_for(module):
+    """Default DENY: a function with no recorded decision fails the suite."""
+    unaccounted = [
+        name for name in _functions_in(module)
+        if name not in SAFETY_FUNCTIONS
+        and name not in SAFETY_PROPERTIES
+        and name not in EXCUSED_IN_CRITICAL_MODULES
+    ]
     assert not unaccounted, (
-        "safety-shaped functions are neither registered nor excused: "
-        f"{unaccounted}. Add them to SAFETY_FUNCTIONS so the wiring guard "
-        "covers them, or to NOT_SAFETY_MECHANISMS with a reason. The registry "
-        "must grow with the codebase — it went stale once already."
+        f"{module} defines {unaccounted} with no decision recorded. Register "
+        "each in SAFETY_FUNCTIONS so its production call site is verified, or "
+        "add it to EXCUSED_IN_CRITICAL_MODULES with a stated reason. Guessing "
+        "which names matter has failed three times here — dotted calls, "
+        "property reads, and action verbs. Silence is not consent."
     )
+
+
+def test_critical_module_excuses_all_exist():
+    """An excuse naming a function that no longer exists rots silently."""
+    defined = set()
+    for module in CRITICAL_MODULES:
+        defined.update(_functions_in(module))
+    dead = [
+        n for n in EXCUSED_IN_CRITICAL_MODULES
+        if n not in defined and n not in GRAPH.defined
+    ]
+    assert not dead, f"excuses for functions that do not exist: {dead}"
 
 
 def test_excuse_list_has_no_dead_entries():

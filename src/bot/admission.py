@@ -152,6 +152,20 @@ class SignalAdmission:
         └─────────────────────────────────────────────────────────────────┘
         """
 
+        # Which checks apply depends on what the instruction DOES.
+        #
+        # This scoping was originally absent, and three checks fired on
+        # instructions they had no business blocking:
+        #   * the kill switch refused CLOSES — directly contrary to brief 25,
+        #     which requires it to stop opening while exits keep working
+        #   * symbol occupancy refused a close on an occupied symbol, when an
+        #     occupied symbol is the whole precondition for closing
+        #   * asset resolution refused CLOSE_ALL, which by nature names none
+        opens_exposure = parsed.message_type in (
+            MessageType.NEW_SIGNAL, MessageType.ADD_POSITION
+        )
+        needs_asset = opens_exposure or parsed.message_type is MessageType.CLOSE_SYMBOL
+
         # 1. Spot boundary FIRST (brief 8). Structural and unconditional: a
         #    spot message must never reach the leveraged path, whatever else it
         #    carries.
@@ -184,8 +198,10 @@ class SignalAdmission:
                 "; ".join(parsed.parse_errors),
             )
 
-        # 4. Asset must resolve, and unambiguously.
-        if parsed.asset is None:
+        # 4. Asset must resolve, and unambiguously — for instructions that
+        #    name an instrument. CLOSE_ALL / CLOSE_DIRECTION / CLOSE_REPLY are
+        #    scoped by other means.
+        if needs_asset and parsed.asset is None:
             return self._refuse(
                 message_row_id,
                 RejectionReason.UNSUPPORTED_ASSET,
@@ -195,7 +211,7 @@ class SignalAdmission:
 
         # 5. Whitelist. GOLD gets its own reason so the pin is visible in the
         #    audit trail rather than looking like a generic rejection.
-        if not self.config.is_tradeable(parsed.asset):
+        if parsed.asset is not None and not self.config.is_tradeable(parsed.asset):
             if parsed.asset is CanonicalAsset.XAU:
                 return self._refuse(
                     message_row_id,
@@ -211,9 +227,11 @@ class SignalAdmission:
             )
 
         # 6. Duplicate detection (brief 23), layer 2: content fingerprint.
+        #    Only a new signal can be a duplicate SIGNAL; a repeated close is
+        #    handled by message-id idempotency.
         #    Layer 1 (channel_id, message_id) is enforced by a UNIQUE index at
         #    ingest. This catches a reposted signal that was reformatted.
-        fingerprint = fingerprint_for(parsed)
+        fingerprint = fingerprint_for(parsed) if opens_exposure else None
         if fingerprint:
             prior = [
                 row
@@ -233,8 +251,9 @@ class SignalAdmission:
         # 7a. One active trade per symbol, from LOCAL state — Kraken nets
         #     positions, so two concurrent trades on one symbol cannot be
         #     protected independently (docs/PLAN.md 4.1).
-        symbol = self.symbol_for.get(parsed.asset)
-        if symbol and self.store.get_active_trade_for_symbol(symbol) is not None:
+        symbol = self.symbol_for.get(parsed.asset) if parsed.asset else None
+        if opens_exposure and symbol and \
+                self.store.get_active_trade_for_symbol(symbol) is not None:
             return self._refuse(
                 message_row_id,
                 RejectionReason.SYMBOL_ALREADY_ACTIVE,
@@ -256,14 +275,16 @@ class SignalAdmission:
         #
         #     Refuse instead. An operator's manual position is not ours to
         #     absorb.
-        if symbol:
+        if opens_exposure and symbol:
             refusal = self.check_exchange_position(symbol, message_row_id)
             if refusal is not None:
                 return refusal
 
-        # 8. Kill switch, checked last so earlier refusals record their real
-        #    reason rather than being masked by it.
-        if not self.kill_switch.allows_new_positions():
+        # 8. Kill switch — blocks OPENING only. Brief 25 is explicit: stop
+        #    opening new positions, continue managing existing protective stops
+        #    and exits. Refusing a close here would trap an operator in a
+        #    position they were trying to get out of.
+        if opens_exposure and not self.kill_switch.allows_new_positions():
             return self._refuse(
                 message_row_id,
                 RejectionReason.KILL_SWITCH_ACTIVE,
@@ -272,7 +293,8 @@ class SignalAdmission:
 
         self.store.append_event(
             EventType.SIGNAL_VALIDATED,
-            f"admitted {parsed.asset.value} {parsed.message_type.value}",
+            f"admitted {parsed.asset.value if parsed.asset else '—'} "
+            f"{parsed.message_type.value}",
             message_row_id=message_row_id,
         )
         return AdmissionResult(True, ExecutionDecision.PENDING)

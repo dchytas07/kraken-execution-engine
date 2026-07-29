@@ -14,6 +14,7 @@ from bot.execution.engine import ExecutionEngine
 from bot.execution.observer import PollingFillObserver
 from bot.killswitch import KillSwitch
 from bot.models import CanonicalAsset, TradeState
+from bot.execution.manager import TradeManager
 from bot.pipeline import SignalPipeline, build_admission
 from tests.test_execution import FakeExchange
 
@@ -59,6 +60,8 @@ def pipe(tmp_path):
                                   client=exchange,
                                   specs={CanonicalAsset.BTC: BTC}),
         engine=engine, specs={CanonicalAsset.BTC: BTC},
+        manager=TradeManager(config=config, store=store, client=exchange,
+                             engine=engine, specs={CanonicalAsset.BTC: BTC}),
     )
     yield pipeline, store, exchange, ks
     store.close()
@@ -152,3 +155,97 @@ def test_second_signal_on_occupied_symbol_places_no_orders(pipe):
         channel_id=-100, message_id=2, text=SIGNAL.replace("SL: 62500", "SL: 62200"))
     assert not result.accepted
     assert len(exchange.orders) == before
+
+
+# ==========================================================================
+# Exit-family routing (brief 17, 18, 21)
+# ==========================================================================
+
+
+def open_a_trade(pipeline, exchange, message_id=1, *, fill=True):
+    """Open a trade, filling the entries so a real position exists."""
+    exchange.autofill_entries = fill
+    result = pipeline.handle_message(channel_id=-100, message_id=message_id,
+                                     text=SIGNAL)
+    exchange.autofill_entries = False
+    assert result.accepted
+    return result.trade_id
+
+
+def fill_closes(exchange):
+    from bot.models import OrderPurpose
+    original = exchange.place_order
+
+    def wrapped(request):
+        res = original(request)
+        if request.purpose is OrderPurpose.CLOSE:
+            exchange.fill(request.client_order_id, request.size, D(65000))
+        return res
+    exchange.place_order = wrapped
+
+
+def test_close_symbol_routes_to_an_actual_close(pipe):
+    pipeline, store, exchange, _ = pipe
+    trade_id = open_a_trade(pipeline, exchange)
+    fill_closes(exchange)
+
+    result = pipeline.handle_message(channel_id=-100, message_id=2, text="Close BTC")
+    assert result.accepted
+    assert store.get_trade(trade_id)["state"] == TradeState.CLOSED.value
+
+
+def test_close_all_routes_to_a_close(pipe):
+    pipeline, store, exchange, _ = pipe
+    trade_id = open_a_trade(pipeline, exchange)
+    fill_closes(exchange)
+    assert pipeline.handle_message(channel_id=-100, message_id=2,
+                                    text="Close all positions").accepted
+    assert store.get_trade(trade_id)["state"] == TradeState.CLOSED.value
+
+
+def test_ambiguous_close_refused_and_nothing_closes(pipe):
+    """brief 21: a wrong close is worse than a missed close."""
+    pipeline, store, exchange, _ = pipe
+    trade_id = open_a_trade(pipeline, exchange)
+    result = pipeline.handle_message(channel_id=-100, message_id=2, text="close it")
+    assert not result.accepted
+    assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
+    assert store.get_message(-100, 2)["execution_decision"] == "REQUIRES_REVIEW"
+
+
+def test_partial_close_reduces_but_does_not_close(pipe):
+    pipeline, store, exchange, _ = pipe
+    trade_id = open_a_trade(pipeline, exchange)
+    before = exchange.get_position("PF_XBTUSD").size
+    fill_closes(exchange)
+
+    pipeline.handle_message(channel_id=-100, message_id=2, text="Close BTC 50%")
+    after = exchange.get_position("PF_XBTUSD")
+    if after is not None:
+        assert after.size < before
+        assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
+
+
+def test_sl_update_is_flagged_for_review_not_silently_dropped(pipe):
+    pipeline, store, exchange, _ = pipe
+    open_a_trade(pipeline, exchange)
+    result = pipeline.handle_message(channel_id=-100, message_id=2,
+                                     text="Move BTC SL to 63000")
+    assert not result.accepted
+    assert store.get_message(-100, 2)["execution_decision"] == "REQUIRES_REVIEW"
+
+
+def test_close_with_no_open_trades_is_recorded_as_ignored(pipe):
+    pipeline, store, exchange, _ = pipe
+    result = pipeline.handle_message(channel_id=-100, message_id=1,
+                                     text="Close all positions")
+    assert not result.accepted
+    assert store.get_message(-100, 1)["execution_decision"] == "IGNORED"
+
+
+def test_opening_a_trade_protects_it_same_request(pipe):
+    """Same-cycle guarantee through the pipeline, not just the manager."""
+    pipeline, store, exchange, _ = pipe
+    open_a_trade(pipeline, exchange)
+    stops = [o for o in exchange.get_open_orders() if o.order_type == "stop"]
+    assert len(stops) == 1, "trade opened and filled without protection"

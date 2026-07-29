@@ -81,6 +81,10 @@ class FakeExchange(ExchangeClient):
         self.reject_next = False
         self.amend_fails = False
         self.cancel_fails = False
+        # When True, entry limit orders fill immediately at their limit price.
+        # Models a marketable limit, which is what the pipeline places when a
+        # signal's entry range straddles the mark.
+        self.autofill_entries = False
 
     @property
     def position(self) -> Position | None:
@@ -141,7 +145,11 @@ class FakeExchange(ExchangeClient):
             reduce_only=request.reduce_only,
             status=OrderStatus.OPEN,
         )
-        return OrderResult(True, oid, request.client_order_id, OrderStatus.OPEN)
+        result = OrderResult(True, oid, request.client_order_id, OrderStatus.OPEN)
+        if (self.autofill_entries and request.purpose is OrderPurpose.ENTRY
+                and request.price is not None):
+            self.fill(request.client_order_id, request.size, request.price)
+        return result
 
     def cancel_order(self, exchange_order_id):
         if self.cancel_fails:

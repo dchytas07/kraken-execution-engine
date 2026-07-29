@@ -92,6 +92,7 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
     if config.trading_mode.touches_exchange:
         from .exchange.kraken import KrakenCliAdapter
         from .execution.engine import ExecutionEngine
+        from .execution.manager import TradeManager
         from .execution.observer import PollingFillObserver
         from .reconcile import Reconciler
         from .recovery import RecoveryManager
@@ -113,6 +114,10 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
             config=config, store=store, client=adapter,
             observer=PollingFillObserver(adapter),
             kill_switch=kill_switch,
+        )
+        manager = TradeManager(
+            config=config, store=store, client=adapter, engine=engine,
+            specs=specs,
         )
         reconciler = Reconciler(
             config=config, store=store, client=adapter, engine=engine,

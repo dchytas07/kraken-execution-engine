@@ -1,0 +1,307 @@
+"""Forward lifecycle driver.
+
+Reconciliation is a safety net. This is the thing it is a net *for*.
+
+Before this existed the pipeline opened trades and stopped: the TP ladder,
+breakeven and closes had no production caller, and a position was protected
+only when the 60-second reconciliation loop noticed it was unprotected. That
+meant **up to a full cycle of real exposure after every fill**.
+
+## The same-cycle protection guarantee
+
+`step()` observes fills and, in the *same call*, places the protective stop
+before returning. There is no path where a fill is observed and the stop waits
+for a later cycle:
+
+    sync_entry_fills()      -> observe via the FillObserver
+    if position and no stop -> place_stop() immediately
+    ...only then continue to TPs, breakeven, closes
+
+`SignalPipeline` calls `step()` directly after `open_trade`, so an entry that
+fills immediately is protected within the same request. Subsequent fills are
+picked up by the manage loop, which runs far faster than reconciliation
+(`MANAGE_INTERVAL_SECONDS`, default 5s) and is also woken by the fill stream.
+
+Reconciliation still checks protection — but as a net catching what this
+missed, not as the mechanism that provides it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+
+from ..config import Config
+from ..db.store import Store
+from ..exchange.base import ExchangeClient, Position
+from ..logging_setup import get_logger
+from ..models import Direction, EventType, OrderPurpose, OrderStatus, TradeState
+from .engine import ExecutionEngine, ExecutionRefused
+
+log = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class StepResult:
+    trade_id: int
+    actions: list[str] = field(default_factory=list)
+    protected_this_step: bool = False
+
+    def note(self, action: str) -> None:
+        self.actions.append(action)
+
+
+class TradeManager:
+    def __init__(
+        self,
+        *,
+        config: Config,
+        store: Store,
+        client: ExchangeClient,
+        engine: ExecutionEngine,
+        specs: dict,
+    ) -> None:
+        self.config = config
+        self.store = store
+        self.client = client
+        self.engine = engine
+        self.specs = specs
+        self._spec_by_symbol = {s.symbol: s for s in specs.values()}
+
+    # ------------------------------------------------------------------
+
+    def step_all(self) -> list[StepResult]:
+        """Advance every open trade one step."""
+        results = []
+        for trade in self.store.open_trades():
+            try:
+                results.append(self.step(trade["id"]))
+            except Exception:
+                log.error(
+                    f"trade {trade['id']} step failed; reconciliation remains the "
+                    "safety net",
+                    exc_info=True,
+                    extra={"trade_id": trade["id"], "action": "step_failed"},
+                )
+        return results
+
+    def step(self, trade_id: int) -> StepResult:
+        """One forward step for one trade.
+
+        Ordering is the safety property: protection is established before any
+        other action, in this same call.
+        """
+        result = StepResult(trade_id=trade_id)
+        trade = self.store.get_trade(trade_id)
+        state = TradeState(trade["state"])
+        if state.is_terminal or state is TradeState.REQUIRES_REVIEW:
+            return result
+
+        symbol = trade["symbol"]
+        spec = self._spec_by_symbol.get(symbol)
+        if spec is None:
+            return result
+        direction = Direction(trade["direction"])
+
+        # 1. Observe fills. Returns the ACTUAL position.
+        position = self.engine.sync_entry_fills(trade_id)
+        if position is None or position.is_flat:
+            return result
+
+        # 2. PROTECT IMMEDIATELY — same call, before anything else.
+        if self.ensure_protected(trade_id, spec, direction, position):
+            result.protected_this_step = True
+            result.note("stop placed")
+
+        # 3. TP ladder, once protected.
+        if self.ensure_take_profits(trade_id, spec, direction, position):
+            result.note("tp ladder placed")
+
+        # 4. Observe TP fills; advances TP1..TP4 states on CONFIRMED fills.
+        highest = self.engine.sync_take_profits(trade_id)
+        if highest:
+            result.note(f"tp{highest} filled")
+
+        # 5. Breakeven — authorised only by a confirmed TP2 fill (brief 15).
+        state = TradeState(self.store.get_trade(trade_id)["state"])
+        if state is TradeState.TP2_FILLED:
+            fresh = self.engine.observer.observe_position(symbol)
+            if fresh and not fresh.is_flat:
+                if self.engine.move_stop_to_breakeven(
+                    trade_id=trade_id, spec=spec, direction=direction,
+                    position=fresh,
+                ):
+                    result.note("breakeven active")
+
+        # 6. TP4 filled — close whatever remains.
+        state = TradeState(self.store.get_trade(trade_id)["state"])
+        if state is TradeState.TP4_FILLED:
+            if self.engine.close_trade(
+                trade_id=trade_id, trade_uid=trade["trade_uid"], spec=spec,
+                direction=direction,
+            ):
+                result.note("closed after TP4")
+
+        return result
+
+    # ------------------------------------------------------------------
+
+    def ensure_protected(
+        self, trade_id: int, spec, direction: Direction, position: Position
+    ) -> bool:
+        """Place the protective stop if the position has none.
+
+        Called in the same breath as observing the fill. Returns True when a
+        stop was placed by this call.
+        """
+        if self.active_stop_exists(trade_id, spec.symbol):
+            return False
+
+        trade = self.store.get_trade(trade_id)
+        intent_sl = trade["intent_stop_loss"]
+        if intent_sl is None:
+            self.engine._enter_safe_error(
+                trade_id,
+                f"{spec.symbol} holds {position.size} but the trade carries no "
+                "stop-loss level to protect it with",
+                symbol=spec.symbol,
+            )
+            return False
+
+        try:
+            self.engine.place_stop(
+                trade_id=trade_id, trade_uid=trade["trade_uid"], spec=spec,
+                direction=direction, trigger_price=Decimal(intent_sl),
+                position=position,
+            )
+        except ExecutionRefused as exc:
+            self.engine._enter_safe_error(
+                trade_id, f"could not protect {spec.symbol}: {exc}",
+                symbol=spec.symbol,
+            )
+            return False
+
+        log.info(
+            f"{spec.symbol} protected at {intent_sl} for {position.size} "
+            "(same cycle as the fill)",
+            extra={"trade_id": trade_id, "symbol": spec.symbol,
+                   "action": "protected"},
+        )
+        return True
+
+    def active_stop_exists(self, trade_id: int, symbol: str) -> bool:
+        """True when a live protective stop covers this symbol."""
+        return any(
+            o.order_type == "stop" and o.symbol == symbol
+            for o in self.client.get_open_orders()
+        )
+
+    def ensure_take_profits(
+        self, trade_id: int, spec, direction: Direction, position: Position
+    ) -> bool:
+        """Place the TP ladder once, from stored intent."""
+        existing = [
+            r for r in self.store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT)
+            if not OrderStatus(r["status"]).is_final
+        ]
+        if existing:
+            return False
+
+        trade = self.store.get_trade(trade_id)
+        import json as _json
+
+        levels = [Decimal(p) for p in _json.loads(trade["intent_take_profits_json"] or "[]")]
+        if not levels:
+            return False
+
+        try:
+            self.engine.place_take_profits(
+                trade_id=trade_id, trade_uid=trade["trade_uid"], spec=spec,
+                direction=direction, take_profits=tuple(levels), position=position,
+            )
+        except ExecutionRefused as exc:
+            log.error(
+                f"TP ladder not placed for {spec.symbol}: {exc}",
+                extra={"trade_id": trade_id, "action": "tp_failed"},
+            )
+            return False
+
+        self.store.append_event(
+            EventType.ORDER_ACCEPTED,
+            f"take-profit ladder placed ({len(levels)} levels)",
+            trade_id=trade_id,
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # Instruction handling (close / partial close)
+    # ------------------------------------------------------------------
+
+    def close_trades(
+        self, trade_ids: list[int], *, percentage: Decimal | None = None
+    ) -> dict[int, bool]:
+        """Close (or partially close) specific trades. Returns per-trade
+        confirmation — True ONLY when the exchange confirmed flat."""
+        outcomes: dict[int, bool] = {}
+        for trade_id in trade_ids:
+            trade = self.store.get_trade(trade_id)
+            if trade is None:
+                continue
+            spec = self._spec_by_symbol.get(trade["symbol"])
+            if spec is None:
+                outcomes[trade_id] = False
+                continue
+            try:
+                outcomes[trade_id] = self.engine.close_trade(
+                    trade_id=trade_id, trade_uid=trade["trade_uid"], spec=spec,
+                    direction=Direction(trade["direction"]), percentage=percentage,
+                )
+            except ExecutionRefused as exc:
+                log.error(
+                    f"close refused for trade {trade_id}: {exc}",
+                    extra={"trade_id": trade_id, "action": "close_refused"},
+                )
+                outcomes[trade_id] = False
+        return outcomes
+
+    def resolve_close_targets(
+        self,
+        *,
+        symbol: str | None = None,
+        direction: Direction | None = None,
+        reply_to_message_id: int | None = None,
+        close_all: bool = False,
+    ) -> list[int] | None:
+        """Resolve which trades a close instruction refers to (brief 20, 21).
+
+        Returns None when the target cannot be determined — the caller must then
+        refuse rather than guess. Resolution order is deterministic: reply
+        relationship, then explicit symbol, then explicit direction, then an
+        explicit 'all'.
+        """
+        open_trades = self.store.open_trades()
+        live = [
+            t for t in open_trades
+            if TradeState(t["state"]).is_open or
+            TradeState(t["state"]) is TradeState.WAITING_FOR_ENTRY
+        ]
+        if not live:
+            return []
+
+        if reply_to_message_id is not None:
+            matched = [t for t in live if t["origin_message_id"] == reply_to_message_id]
+            if matched:
+                return [t["id"] for t in matched]
+            # A reply we cannot tie to a trade is ambiguous, not "all".
+            return None
+
+        if symbol is not None:
+            return [t["id"] for t in live if t["symbol"] == symbol]
+
+        if direction is not None:
+            return [t["id"] for t in live if t["direction"] == direction.value]
+
+        if close_all:
+            return [t["id"] for t in live]
+
+        return None
