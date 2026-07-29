@@ -72,13 +72,26 @@ class FakeExchange(ExchangeClient):
         self.mark = mark
         self.orders: dict[str, Order] = {}
         self.fills: list[Fill] = []
-        self.position: Position | None = None
+        # Multi-symbol storage. `position` remains a single-symbol view so the
+        # many existing single-symbol tests read naturally.
+        self.positions: dict[str, Position] = {}
         self.leverage: dict[str, Decimal] = {}
         self.available = D(10000)
         self._seq = 0
         self.reject_next = False
         self.amend_fails = False
         self.cancel_fails = False
+
+    @property
+    def position(self) -> Position | None:
+        return next(iter(self.positions.values()), None)
+
+    @position.setter
+    def position(self, value: Position | None) -> None:
+        if value is None:
+            self.positions.clear()
+        else:
+            self.positions[value.symbol] = value
 
     # -- reference ------------------------------------------------------
     def get_instrument_spec(self, asset): return BTC
@@ -88,12 +101,11 @@ class FakeExchange(ExchangeClient):
 
     # -- state ----------------------------------------------------------
     def get_open_positions(self):
-        return [self.position] if self.position and not self.position.is_flat else []
+        return [p for p in self.positions.values() if not p.is_flat]
 
     def get_position(self, symbol):
-        if self.position and self.position.symbol == symbol and not self.position.is_flat:
-            return self.position
-        return None
+        p = self.positions.get(symbol)
+        return p if p is not None and not p.is_flat else None
 
     def get_open_orders(self):
         return [o for o in self.orders.values() if o.status.is_resting]
@@ -181,20 +193,22 @@ class FakeExchange(ExchangeClient):
         self._apply(order.symbol, delta, price)
 
     def _apply(self, symbol, delta, price):
-        if self.position is None:
-            self.position = Position(symbol=symbol, side="long", size=D(0),
-                                     entry_price=price)
-        new_size = self.position.size + delta
+        current = self.positions.get(symbol)
+        if current is None:
+            current = Position(symbol=symbol, side="long", size=D(0),
+                               entry_price=price)
+        new_size = current.size + delta
         if new_size <= 0:
-            self.position = None
+            self.positions.pop(symbol, None)
             return
         if delta > 0:
-            total = self.position.entry_price * self.position.size + price * delta
+            total = current.entry_price * current.size + price * delta
             entry = total / new_size
         else:
-            entry = self.position.entry_price
-        self.position = Position(symbol=symbol, side="long", size=new_size,
-                                 entry_price=entry, mark_price=self.mark)
+            entry = current.entry_price
+        self.positions[symbol] = Position(symbol=symbol, side="long",
+                                          size=new_size, entry_price=entry,
+                                          mark_price=self.mark)
 
 
 def replace_order(order: Order, **kw) -> Order:

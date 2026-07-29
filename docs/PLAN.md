@@ -611,3 +611,26 @@ backstop.
 Seven meta-tests pin the detector's behaviour: dotted calls, chained calls,
 property reads, properties used as calls, definitions, recursive self-calls,
 and names appearing only in strings or comments.
+
+---
+
+## 11. Ambiguous-recovery blast radius (confirmed 2026-07-29)
+
+An `AMBIGUOUS` crash-recovery case **quarantines one trade; it does not halt
+trading.** `blocking_reason` is set by exactly three things, none of them
+ambiguity:
+
+1. the exchange could not be read at all,
+2. a leverage re-assert failed,
+3. a position could not be protected.
+
+Rationale: an unresolvable BTC order says nothing about ETH, so a global halt
+would be over-broad. The quarantine is real, not nominal — `REQUIRES_REVIEW` is
+non-terminal, so the trade still occupies its symbol and admission refuses new
+signals there, while reconciliation keeps protecting its position.
+
+Scope is now tested, not just the classification: with one symbol ambiguous and
+another clean, tests assert the gate opens, only the ambiguous trade is
+quarantined, the clean symbol can still open a trade, the quarantined symbol
+refuses new signals, and its position is still protected. A contrast test
+confirms a genuinely global fault (unreadable exchange) does halt everything.

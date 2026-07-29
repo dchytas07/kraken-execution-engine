@@ -140,6 +140,23 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def last_message_id(self, channel_id: int | None) -> int | None:
+        """Highest message id already stored, for reconnect backfill.
+
+        None means nothing has been seen yet, so the listener replays whatever
+        the backfill window holds rather than assuming a starting point.
+        """
+        if channel_id is None:
+            row = self._conn.execute(
+                "SELECT MAX(message_id) AS m FROM messages"
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT MAX(message_id) AS m FROM messages WHERE channel_id = ?",
+                (channel_id,),
+            ).fetchone()
+        return row["m"] if row and row["m"] is not None else None
+
     def get_message(self, channel_id: int, message_id: int) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM messages WHERE channel_id = ? AND message_id = ?",

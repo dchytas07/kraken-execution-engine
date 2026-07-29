@@ -52,6 +52,10 @@ SAFETY_FUNCTIONS = {
     "require_recovered": "brief 29 — no orders before restart recovery",
     "mark_recovery_complete": "brief 29 — the only thing that opens the gate",
     "recover": "brief 29 — restart recovery",
+    "handle_message": "the message -> trade pipeline entry point",
+    "dispatch": "brief 5 — Telegram message dispatch",
+    "backfill": "brief 5 — replay messages missed while disconnected",
+    "last_message_id": "brief 5 — backfill high-water mark",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -63,8 +67,10 @@ SAFETY_PROPERTIES = {
 # Mechanisms with no caller YET, each owned by a named future stage. Anything
 # not on this list and not called is a failure. Entries must be removed as
 # their stage lands — leaving one here after its stage ships is itself a bug.
-PENDING_WIRING = {
-    "handle_message": "Stage 9 — needs the Telegram listener",
+PENDING_WIRING: dict[str, str] = {
+    # Empty: every registered safety mechanism now has a production call site.
+    # Add an entry only with a NAMED stage, and remove it when that stage lands
+    # (test_pending_wiring_entries_are_still_actually_unwired enforces that).
 }
 
 # Wired in Stage 7 and removed from PENDING_WIRING:

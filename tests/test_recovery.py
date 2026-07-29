@@ -40,7 +40,8 @@ RAW = {i["symbol"]: i for i in json.loads(
     (Path(__file__).parent / "fixtures" / "futures_instruments.json").read_text()
 )["instruments"]}
 BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)
-SPECS = {CanonicalAsset.BTC: BTC}
+ETH = parse_instrument(RAW["PF_ETHUSD"], CanonicalAsset.ETH)
+SPECS = {CanonicalAsset.BTC: BTC, CanonicalAsset.ETH: ETH}
 ENTRIES = (D(64000), D(63500))
 
 
@@ -493,3 +494,149 @@ def test_recovery_advances_a_stale_lifecycle_label(session):
     assert trade["state"] == TradeState.PROTECTED.value
     assert Decimal(trade["actual_quantity"]) == plan.total_intended_size
     restarted.store.close()
+
+
+# ==========================================================================
+# Blast radius of an AMBIGUOUS case: quarantine, not a global halt
+# ==========================================================================
+
+
+def eth_trade(session, *, message_id=2):
+    msg = session.store.record_message(channel_id=-1, message_id=message_id,
+                                       raw_text="ETH")
+    trade_id, uid = session.store.create_trade(
+        origin_message_row_id=msg, origin_channel_id=-1,
+        origin_message_id=message_id, asset="ETH", symbol="PF_ETHUSD",
+        direction="LONG", intent_stop_loss=D(1890),
+    )
+    session.store.transition_trade(trade_id, TradeState.PARSED)
+    session.store.transition_trade(trade_id, TradeState.VALIDATED)
+    return trade_id, uid
+
+
+def make_btc_ambiguous(session, trade_id, uid):
+    """An intent absent from the exchange while a BTC position exists."""
+    session.store.record_order_intent(
+        trade_id=trade_id, client_order_id=f"{uid}-ENTRY-1",
+        purpose=OrderPurpose.ENTRY, symbol="PF_XBTUSD", side="buy",
+        order_type="limit", quantity=D("0.0023"), price=D(64000), sequence=1,
+    )
+    session.store.transition_trade(trade_id, TradeState.WAITING_FOR_ENTRY)
+    session.exchange.positions["PF_XBTUSD"] = Position(
+        symbol="PF_XBTUSD", side="long", size=D("0.0023"), entry_price=D(64000))
+
+
+def test_ambiguous_trade_does_not_block_the_recovery_gate(session):
+    """Scope check: an unresolvable BTC intent must not halt ETH.
+
+    An ambiguous order tells us nothing about a different symbol, so blocking
+    all trading would be over-broad. It quarantines the affected trade only.
+    """
+    btc_id, btc_uid = new_trade(session)
+    make_btc_ambiguous(session, btc_id, btc_uid)
+    eth_id, _ = eth_trade(session)
+
+    restarted = session.crash()
+    result = restarted.recovery.recover()
+
+    assert IntentOutcome.AMBIGUOUS in outcomes(result)
+    assert btc_id in result.trades_needing_review
+    # The gate OPENS: trading is not globally halted.
+    assert result.safe_to_trade
+    restarted.engine.require_recovered()  # must not raise
+    restarted.store.close()
+
+
+def test_only_the_ambiguous_trade_is_quarantined(session):
+    btc_id, btc_uid = new_trade(session)
+    make_btc_ambiguous(session, btc_id, btc_uid)
+    eth_id, _ = eth_trade(session)
+
+    restarted = session.crash()
+    result = restarted.recovery.recover()
+
+    assert restarted.store.get_trade(btc_id)["state"] == \
+        TradeState.REQUIRES_REVIEW.value
+    assert eth_id not in result.trades_needing_review
+    assert restarted.store.get_trade(eth_id)["state"] == TradeState.VALIDATED.value
+    restarted.store.close()
+
+
+def test_clean_symbol_can_still_open_after_an_ambiguous_one(session):
+    """The load-bearing assertion: ETH trades while BTC is quarantined."""
+    btc_id, btc_uid = new_trade(session)
+    make_btc_ambiguous(session, btc_id, btc_uid)
+    eth_id, eth_uid = eth_trade(session)
+
+    restarted = session.crash()
+    restarted.recovery.recover()
+
+    plan = restarted.engine.plan_entries(
+        spec=ETH, direction=Direction.LONG,
+        entry_prices=(D(1920), D(1910)), signal_leverage=D(10),
+    )
+    restarted.exchange.mark = D(1915)
+    coids = restarted.engine.open_trade(
+        trade_id=eth_id, trade_uid=eth_uid, spec=ETH, plan=plan
+    )
+    assert len(coids) == 2, "a clean symbol was blocked by an unrelated quarantine"
+    restarted.store.close()
+
+
+def test_quarantined_symbol_refuses_new_signals(session):
+    """The quarantine must actually hold: REQUIRES_REVIEW keeps the symbol
+    occupied, so a fresh BTC signal cannot open into the unclear position."""
+    from bot.admission import SignalAdmission
+    from bot.parser.parse import parse_message
+
+    btc_id, btc_uid = new_trade(session)
+    make_btc_ambiguous(session, btc_id, btc_uid)
+
+    restarted = session.crash()
+    restarted.recovery.recover()
+    assert restarted.store.get_active_trade_for_symbol("PF_XBTUSD") is not None
+
+    admission = SignalAdmission(
+        config=restarted.config, store=restarted.store,
+        kill_switch=restarted.kill_switch,
+        symbol_for={CanonicalAsset.BTC: "PF_XBTUSD", CanonicalAsset.ETH: "PF_ETHUSD"},
+        position_for=restarted.exchange.get_position,
+    )
+    text = ("BTC LONG Entry: 64000 - 63500 TP1 65000 TP2 66000 TP3 67000 "
+            "TP4 68000 SL 62500 10x")
+    row = restarted.store.record_message(channel_id=-1, message_id=99, raw_text=text)
+    parsed = parse_message(channel_id=-1, message_id=99, text=text)
+    result = admission.admit(parsed, row)
+
+    assert result.refused, "a quarantined symbol accepted a new signal"
+    restarted.store.close()
+
+
+def test_quarantined_trade_still_gets_its_position_protected(session):
+    """Quarantine means 'do not act on strategy', not 'abandon the position'."""
+    btc_id, btc_uid = new_trade(session)
+    make_btc_ambiguous(session, btc_id, btc_uid)
+
+    restarted = session.crash()
+    restarted.recovery.recover()
+
+    stops = [o for o in restarted.exchange.get_open_orders()
+             if o.order_type == "stop" and o.symbol == "PF_XBTUSD"]
+    assert len(stops) == 1, "a quarantined position was left unprotected"
+    assert stops[0].size == restarted.exchange.get_position("PF_XBTUSD").size
+    restarted.store.close()
+
+
+def test_a_genuinely_global_problem_does_block_everything(session):
+    """Contrast: an unreadable exchange is global, and must halt all trading."""
+    from bot.exchange.base import ExchangeError
+    eth_trade(session)
+
+    def explode():
+        raise ExchangeError("network down", retryable=True)
+    session.exchange.get_open_positions = explode
+
+    result = session.recovery.recover()
+    assert not result.safe_to_trade
+    with pytest.raises(ExecutionRefused, match="RECOVERY_INCOMPLETE"):
+        session.engine.require_recovered()
