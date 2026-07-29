@@ -1,27 +1,26 @@
 """API key permission verification (brief 25).
 
-The rule: the trading key must not be able to withdraw funds, and if that
-cannot be positively established, the engine does not start.
+Read docs/KRAKEN_NOTES.md section 1 before changing anything here. The short
+version, established from Kraken's own documentation:
 
-How we establish it, given we cannot introspect a Kraken key's permission set
-directly: probe a **read-only** endpoint that Kraken gates behind the "Withdraw
-funds" permission, and require it to be *denied*.
+1. `WithdrawMethods` / `WithdrawAddresses` require BOTH "Funds permissions -
+   Query" AND "Funds permissions - Withdraw". So a *denial* does not prove the
+   key lacks withdrawal — it may merely lack Query. The probe is a **positive
+   detector**: success proves danger, denial proves nothing.
 
-  * `kraken withdrawal methods` -> requires "Withdraw funds"
-  * `kraken withdrawal addresses` -> requires "Withdraw funds"
+2. Those endpoints authenticate with the **Spot** key. All trading here happens
+   on the **Futures** key, a separate credential with a separate permission
+   model. A spot probe says nothing about the futures key.
 
-Neither moves money; both merely list configuration. If either SUCCEEDS the key
-can withdraw, and we refuse to start.
+3. Kraken Futures keys gate withdrawal behind a separate "Withdrawal API"
+   permission, and General "Full Access" explicitly excludes withdrawals. But
+   no read-only endpoint sits behind that permission, so the futures key's
+   withdrawal capability **cannot be verified via the API** without attempting
+   a real withdrawal, which we will never do.
 
-Ordering matters. A key that is simply invalid also fails these probes, which
-would look identical to "correctly restricted". So connectivity is proven
-first with an authenticated read that the trading key must have anyway. Only
-against a key we know works does a denial actually mean "permission absent".
-
-    1. prove the key authenticates          (futures accounts)
-    2. prove it CANNOT reach withdraw scope (withdrawal methods/addresses)
-
-An inconclusive result is treated as failure, per brief 40's fail-closed rule.
+Hence the split: probe what is probeable, and require an explicit recorded
+operator attestation for what is not. A denial is reported as NOT_VERIFIABLE,
+never as PASS, so the log never claims a guarantee we do not have.
 """
 
 from __future__ import annotations
@@ -35,12 +34,18 @@ from ..models import TradingMode
 
 log = get_logger(__name__)
 
+# Operator attestation phrase for the futures key (see module docstring 3).
+FUTURES_WITHDRAWAL_ATTESTATION = "WITHDRAWAL_API_SET_TO_NO_ACCESS"
+
 
 class CheckOutcome(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"
     SKIPPED = "SKIPPED"
     INCONCLUSIVE = "INCONCLUSIVE"
+    # Distinct from INCONCLUSIVE: the check ran cleanly, but the result is
+    # structurally incapable of proving the property we want.
+    NOT_VERIFIABLE = "NOT_VERIFIABLE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +56,17 @@ class CheckResult:
 
     @property
     def blocks_startup(self) -> bool:
-        """Anything not positively PASS or deliberately SKIPPED blocks."""
+        """Only definitive danger and genuine ambiguity block.
+
+        NOT_VERIFIABLE deliberately does not block: if it did, live trading
+        would be impossible forever, because the futures withdrawal permission
+        has no read-only endpoint. It is surfaced loudly instead, and the
+        operator attestation carries that weight.
+        """
         return self.outcome in (CheckOutcome.FAIL, CheckOutcome.INCONCLUSIVE)
 
 
-# Probes that require the "Withdraw funds" permission. Both are read-only.
+# Read-only endpoints behind the Spot "Withdraw Funds" permission.
 _WITHDRAW_SCOPE_PROBES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("spot_withdrawal_methods", ("withdrawal", "methods")),
     ("spot_withdrawal_addresses", ("withdrawal", "addresses")),
@@ -63,8 +74,7 @@ _WITHDRAW_SCOPE_PROBES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def check_connectivity(cli: KrakenCli) -> CheckResult:
-    """Prove the futures credentials authenticate before drawing any
-    conclusions from a denial elsewhere."""
+    """Prove the futures credentials authenticate and can read the account."""
     result, err = cli.try_run("futures", "accounts")
     if err is None:
         return CheckResult(
@@ -83,12 +93,12 @@ def check_connectivity(cli: KrakenCli) -> CheckResult:
     )
 
 
-def check_no_withdrawal_permission(cli: KrakenCli) -> CheckResult:
-    """Require every withdraw-scoped probe to be denied.
+def check_spot_withdrawal_scope(cli: KrakenCli) -> CheckResult:
+    """Positive detector for a withdraw-capable SPOT key.
 
-    A single probe succeeding is disqualifying. A probe failing for a reason
-    unrelated to permissions (network, rate limit) is inconclusive, not a pass —
-    we must not read a flaky network as proof of a safe key.
+    Success on either probe means the key holds both Query and Withdraw funds
+    permissions — definitive, and disqualifying. A denial is ambiguous and is
+    reported as NOT_VERIFIABLE (see KRAKEN_NOTES 1.2).
     """
     denials: list[str] = []
     for name, args in _WITHDRAW_SCOPE_PROBES:
@@ -96,30 +106,59 @@ def check_no_withdrawal_permission(cli: KrakenCli) -> CheckResult:
 
         if err is None:
             return CheckResult(
-                "no_withdrawal_permission",
+                "spot_withdrawal_scope",
                 CheckOutcome.FAIL,
-                f"{name} SUCCEEDED — this API key can access withdrawal scope. "
-                "Revoke 'Withdraw funds' on the key and restart. Refusing to run "
-                "with a key that can move funds off the exchange.",
+                f"{name} SUCCEEDED — this spot API key holds both 'Query Funds' "
+                "and 'Withdraw Funds'. It can move funds off the exchange. "
+                "Revoke 'Withdraw Funds' and restart.",
             )
 
-        if err.category in (ErrorCategory.AUTH, ErrorCategory.VALIDATION, ErrorCategory.API):
-            # Denied — the outcome we want.
+        if err.category in (
+            ErrorCategory.AUTH,
+            ErrorCategory.VALIDATION,
+            ErrorCategory.API,
+        ):
             denials.append(f"{name}: denied ({err.category.value})")
             continue
 
         return CheckResult(
-            "no_withdrawal_permission",
+            "spot_withdrawal_scope",
             CheckOutcome.INCONCLUSIVE,
             f"{name} failed for a non-permission reason "
-            f"({err.category.value}: {err.message}); cannot confirm the key is "
-            "restricted, so refusing to start",
+            f"({err.category.value}: {err.message}); cannot draw any conclusion",
         )
 
     return CheckResult(
-        "no_withdrawal_permission",
-        CheckOutcome.PASS,
-        "withdrawal scope denied on all probes — " + "; ".join(denials),
+        "spot_withdrawal_scope",
+        CheckOutcome.NOT_VERIFIABLE,
+        "withdrawal endpoints denied (" + "; ".join(denials) + "). NOTE: these "
+        "endpoints require BOTH 'Query Funds' and 'Withdraw Funds', so a denial "
+        "may mean the key merely lacks 'Query Funds' while still holding "
+        "'Withdraw Funds'. This is NOT proof the key cannot withdraw.",
+    )
+
+
+def check_futures_withdrawal_attestation(attestation: str | None) -> CheckResult:
+    """The futures withdrawal permission has no read-only endpoint.
+
+    Nothing can be probed, so we require the operator to state that they set
+    the key's Withdrawal API permission to "No Access". The claim is recorded
+    in the audit log so it is attributable after the fact.
+    """
+    if attestation == FUTURES_WITHDRAWAL_ATTESTATION:
+        return CheckResult(
+            "futures_withdrawal_attestation",
+            CheckOutcome.PASS,
+            "operator attests the futures key's Withdrawal API permission is "
+            "'No Access' (attestation recorded; not machine-verifiable)",
+        )
+    return CheckResult(
+        "futures_withdrawal_attestation",
+        CheckOutcome.FAIL,
+        "the futures key's withdrawal permission cannot be probed via any "
+        "read-only endpoint, so it must be attested. In the Kraken Futures UI "
+        "confirm the key's 'Withdrawal API' permission is set to 'No Access', "
+        f"then set KRAKEN_FUTURES_WITHDRAWAL_ATTESTATION={FUTURES_WITHDRAWAL_ATTESTATION}",
     )
 
 
@@ -127,16 +166,12 @@ def run_permission_checks(
     cli: KrakenCli,
     mode: TradingMode,
     *,
-    has_credentials: bool,
+    has_futures_credentials: bool,
+    has_spot_credentials: bool = False,
+    futures_withdrawal_attestation: str | None = None,
 ) -> list[CheckResult]:
-    """Run the credential safety checks appropriate to the mode.
-
-    DRY_RUN and PAPER do not send real orders, so missing credentials are not
-    an error there. But if credentials ARE present we still probe them and warn
-    loudly — a withdraw-capable key sitting in the environment is worth knowing
-    about before it is ever pointed at live.
-    """
-    if not has_credentials:
+    """Run the credential safety checks appropriate to the mode."""
+    if not has_futures_credentials:
         if mode.is_live:
             return [
                 CheckResult(
@@ -149,22 +184,32 @@ def run_permission_checks(
             CheckResult(
                 "credentials_present",
                 CheckOutcome.SKIPPED,
-                f"no credentials set; not required in {mode.value} mode",
+                f"no futures credentials set; not required in {mode.value} mode",
             )
         ]
 
     results = [check_connectivity(cli)]
-    if results[0].outcome is CheckOutcome.PASS:
-        results.append(check_no_withdrawal_permission(cli))
+
+    # The futures key is the one that trades, so its attestation is required
+    # regardless of whether a spot key exists.
+    results.append(
+        check_futures_withdrawal_attestation(futures_withdrawal_attestation)
+    )
+
+    # The spot key is not needed for trading at all. Probe it only if present —
+    # a withdraw-capable spot key sitting in the environment is worth catching,
+    # but its absence is not a problem.
+    if has_spot_credentials:
+        results.append(check_spot_withdrawal_scope(cli))
     else:
         results.append(
             CheckResult(
-                "no_withdrawal_permission",
-                CheckOutcome.INCONCLUSIVE,
-                "skipped because connectivity could not be proven; a denial from "
-                "an unauthenticated key would not demonstrate a restricted key",
+                "spot_withdrawal_scope",
+                CheckOutcome.SKIPPED,
+                "no spot credentials configured; spot key is not used for trading",
             )
         )
+
     return results
 
 
@@ -177,18 +222,26 @@ def enforce(results: list[CheckResult], mode: TradingMode) -> None:
 
     Live: any blocking result is fatal.
     Paper/dry: blocking results are logged as errors but do not halt, because
-    no real order can be placed in those modes. The distinction is deliberate
-    and documented so it cannot be mistaken for the check being optional.
+    no real order can be placed. NOT_VERIFIABLE is always surfaced at WARNING
+    so it is never mistaken for a clean pass.
     """
     blocking = [r for r in results if r.blocks_startup]
 
     for r in results:
-        level = log.info if r.outcome is CheckOutcome.PASS else log.error
-        if r.outcome is CheckOutcome.SKIPPED:
-            level = log.info
-        level(
+        match r.outcome:
+            case CheckOutcome.PASS | CheckOutcome.SKIPPED:
+                emit = log.info
+            case CheckOutcome.NOT_VERIFIABLE:
+                emit = log.warning
+            case _:
+                emit = log.error
+        emit(
             f"safety check {r.name}: {r.outcome.value} — {r.detail}",
-            extra={"action": "safety_check", "check": r.name, "outcome": r.outcome.value},
+            extra={
+                "action": "safety_check",
+                "check": r.name,
+                "outcome": r.outcome.value,
+            },
         )
 
     if not blocking:

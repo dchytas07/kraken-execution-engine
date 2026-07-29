@@ -40,6 +40,14 @@ def has_futures_credentials(env: dict[str, str] | None = None) -> bool:
     )
 
 
+def has_spot_credentials(env: dict[str, str] | None = None) -> bool:
+    source = env if env is not None else os.environ
+    return bool(
+        (source.get("KRAKEN_API_KEY") or "").strip()
+        and (source.get("KRAKEN_API_SECRET") or "").strip()
+    )
+
+
 def startup(config: Config) -> tuple[Store, KillSwitch]:
     """Run every startup gate. Raises rather than degrading silently."""
     for line in config.startup_banner():
@@ -68,14 +76,24 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
     results = run_permission_checks(
         build_cli(config),
         config.trading_mode,
-        has_credentials=has_futures_credentials(),
+        has_futures_credentials=has_futures_credentials(),
+        has_spot_credentials=has_spot_credentials(),
+        futures_withdrawal_attestation=os.environ.get(
+            "KRAKEN_FUTURES_WITHDRAWAL_ATTESTATION"
+        ),
     )
     enforce(results, config.trading_mode)
 
+    # The attestation is an operator claim, not a machine fact, so record it in
+    # the append-only log where it is attributable after the fact.
     store.append_event(
         EventType.SAFETY_CHECK_PASSED,
         "startup safety checks complete",
-        detail={r.name: r.outcome.value for r in results},
+        detail={
+            **{r.name: r.outcome.value for r in results},
+            "note": "futures withdrawal permission is operator-attested, "
+            "not API-verifiable (docs/KRAKEN_NOTES.md 1.4)",
+        },
     )
     return store, kill_switch
 

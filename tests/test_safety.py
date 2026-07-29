@@ -8,10 +8,12 @@ from bot.exchange.cli import ErrorCategory, KrakenCli, KrakenCliError
 from bot.killswitch import KillSwitch
 from bot.models import TradingMode
 from bot.safety.permissions import (
+    FUTURES_WITHDRAWAL_ATTESTATION,
     CheckOutcome,
     SafetyCheckFailed,
     check_connectivity,
-    check_no_withdrawal_permission,
+    check_futures_withdrawal_attestation,
+    check_spot_withdrawal_scope,
     enforce,
     run_permission_checks,
 )
@@ -189,37 +191,37 @@ class ScriptedCli(KrakenCli):
 
 DENIED = {"error": "auth", "message": "EAPI:Invalid permissions"}
 ACCOUNT_OK = {"accounts": {"flex": {"balances": {}}}}
+ATTESTED = FUTURES_WITHDRAWAL_ATTESTATION
 
 
-def test_key_that_can_withdraw_is_rejected():
-    """The central check: a successful withdraw-scope probe is disqualifying."""
+def live_checks(cli, *, attestation=ATTESTED, spot=True):
+    return run_permission_checks(
+        cli,
+        TradingMode.LIVE,
+        has_futures_credentials=True,
+        has_spot_credentials=spot,
+        futures_withdrawal_attestation=attestation,
+    )
+
+
+# -- spot probe: positive detector only (KRAKEN_NOTES 1.2) -----------------
+
+
+def test_withdraw_capable_spot_key_is_detected():
+    """Success proves BOTH permissions are held — definitive and disqualifying."""
     cli = ScriptedCli(
         {
             "futures accounts": ACCOUNT_OK,
             "withdrawal methods": {"methods": [{"method": "Bitcoin"}]},
         }
     )
-    result = check_no_withdrawal_permission(cli)
+    result = check_spot_withdrawal_scope(cli)
     assert result.outcome is CheckOutcome.FAIL
-    assert "SUCCEEDED" in result.detail
     assert result.blocks_startup
 
 
-def test_restricted_key_passes():
-    cli = ScriptedCli(
-        {
-            "futures accounts": ACCOUNT_OK,
-            "withdrawal methods": DENIED,
-            "withdrawal addresses": DENIED,
-        }
-    )
-    result = check_no_withdrawal_permission(cli)
-    assert result.outcome is CheckOutcome.PASS
-    assert not result.blocks_startup
-
-
 def test_addresses_probe_also_disqualifies():
-    """Both probes must be denied — one succeeding is enough to refuse."""
+    """Either probe succeeding is enough to refuse."""
     cli = ScriptedCli(
         {
             "futures accounts": ACCOUNT_OK,
@@ -227,36 +229,122 @@ def test_addresses_probe_also_disqualifies():
             "withdrawal addresses": {"addresses": []},
         }
     )
-    assert check_no_withdrawal_permission(cli).outcome is CheckOutcome.FAIL
+    assert check_spot_withdrawal_scope(cli).outcome is CheckOutcome.FAIL
 
 
-def test_network_failure_is_inconclusive_not_a_pass():
-    """A flaky network must never be read as proof of a restricted key."""
+def test_denial_is_not_verifiable_never_a_pass():
+    """The correction from KRAKEN_NOTES 1.2.
+
+    These endpoints require BOTH 'Query Funds' and 'Withdraw Funds', so a
+    denial may mean the key merely lacks Query while still holding Withdraw.
+    Reporting that as PASS would claim a guarantee we do not have.
+    """
+    cli = ScriptedCli(
+        {
+            "futures accounts": ACCOUNT_OK,
+            "withdrawal methods": DENIED,
+            "withdrawal addresses": DENIED,
+        }
+    )
+    result = check_spot_withdrawal_scope(cli)
+    assert result.outcome is CheckOutcome.NOT_VERIFIABLE
+    assert result.outcome is not CheckOutcome.PASS
+    assert "NOT proof" in result.detail
+
+
+def test_network_failure_is_inconclusive_and_blocks():
+    """A flaky network must never be read as any kind of conclusion."""
     cli = ScriptedCli(
         {
             "futures accounts": ACCOUNT_OK,
             "withdrawal methods": {"error": "network", "message": "timeout"},
         }
     )
-    result = check_no_withdrawal_permission(cli)
+    result = check_spot_withdrawal_scope(cli)
     assert result.outcome is CheckOutcome.INCONCLUSIVE
     assert result.blocks_startup
 
 
-def test_connectivity_proven_before_conclusions_are_drawn():
-    """An invalid key is denied everywhere, which must not read as 'safe'."""
-    cli = ScriptedCli(
-        {"futures accounts": DENIED, "withdrawal methods": DENIED}
+# -- futures attestation (KRAKEN_NOTES 1.4) --------------------------------
+
+
+def test_futures_attestation_required():
+    """No read-only endpoint exists behind the futures withdrawal permission."""
+    result = check_futures_withdrawal_attestation(None)
+    assert result.outcome is CheckOutcome.FAIL
+    assert result.blocks_startup
+    assert "No Access" in result.detail
+
+
+def test_futures_attestation_rejects_wrong_phrase():
+    assert (
+        check_futures_withdrawal_attestation("yes I did it").outcome
+        is CheckOutcome.FAIL
     )
-    results = run_permission_checks(cli, TradingMode.LIVE, has_credentials=True)
+
+
+def test_futures_attestation_accepted_with_exact_phrase():
+    result = check_futures_withdrawal_attestation(ATTESTED)
+    assert result.outcome is CheckOutcome.PASS
+    assert "not machine-verifiable" in result.detail
+
+
+def test_live_blocked_without_futures_attestation():
+    """The futures key is the one that trades, so its attestation is required
+    even when the spot probe looks clean."""
+    cli = ScriptedCli(
+        {
+            "futures accounts": ACCOUNT_OK,
+            "withdrawal methods": DENIED,
+            "withdrawal addresses": DENIED,
+        }
+    )
+    with pytest.raises(SafetyCheckFailed, match="LIVE"):
+        enforce(live_checks(cli, attestation=None), TradingMode.LIVE)
+
+
+def test_attestation_required_even_with_no_spot_key():
+    results = live_checks(ScriptedCli({"futures accounts": ACCOUNT_OK}), spot=False)
+    by_name = {r.name: r for r in results}
+    assert by_name["spot_withdrawal_scope"].outcome is CheckOutcome.SKIPPED
+    assert by_name["futures_withdrawal_attestation"].outcome is CheckOutcome.PASS
+
+
+# -- separation of the two credentials (KRAKEN_NOTES 1.3) ------------------
+
+
+def test_spot_probe_is_skipped_when_no_spot_key_configured():
+    """The spot key is not used for trading; its absence is not a problem."""
+    results = live_checks(ScriptedCli({"futures accounts": ACCOUNT_OK}), spot=False)
+    spot = next(r for r in results if r.name == "spot_withdrawal_scope")
+    assert spot.outcome is CheckOutcome.SKIPPED
+    assert not spot.blocks_startup
+
+
+def test_withdraw_capable_spot_key_blocks_even_when_futures_is_attested():
+    cli = ScriptedCli(
+        {
+            "futures accounts": ACCOUNT_OK,
+            "withdrawal methods": {"methods": []},
+        }
+    )
+    with pytest.raises(SafetyCheckFailed, match="LIVE"):
+        enforce(live_checks(cli), TradingMode.LIVE)
+
+
+def test_connectivity_failure_is_reported():
+    """An invalid futures key must surface as a connectivity failure."""
+    results = live_checks(ScriptedCli({"futures accounts": DENIED}))
     by_name = {r.name: r for r in results}
     assert by_name["futures_connectivity"].outcome is CheckOutcome.FAIL
-    assert by_name["no_withdrawal_permission"].outcome is CheckOutcome.INCONCLUSIVE
+
+
+# -- mode gating -----------------------------------------------------------
 
 
 def test_live_mode_without_credentials_is_refused():
     results = run_permission_checks(
-        ScriptedCli({}), TradingMode.LIVE, has_credentials=False
+        ScriptedCli({}), TradingMode.LIVE, has_futures_credentials=False
     )
     assert results[0].outcome is CheckOutcome.FAIL
     with pytest.raises(SafetyCheckFailed):
@@ -265,25 +353,13 @@ def test_live_mode_without_credentials_is_refused():
 
 def test_paper_mode_without_credentials_is_fine():
     results = run_permission_checks(
-        ScriptedCli({}), TradingMode.PAPER, has_credentials=False
+        ScriptedCli({}), TradingMode.PAPER, has_futures_credentials=False
     )
     assert results[0].outcome is CheckOutcome.SKIPPED
     enforce(results, TradingMode.PAPER)
 
 
-def test_live_startup_blocked_by_withdraw_capable_key():
-    cli = ScriptedCli(
-        {
-            "futures accounts": ACCOUNT_OK,
-            "withdrawal methods": {"methods": []},
-        }
-    )
-    results = run_permission_checks(cli, TradingMode.LIVE, has_credentials=True)
-    with pytest.raises(SafetyCheckFailed, match="LIVE"):
-        enforce(results, TradingMode.LIVE)
-
-
-def test_live_startup_allowed_with_restricted_key():
+def test_live_startup_allowed_when_everything_checks_out():
     cli = ScriptedCli(
         {
             "futures accounts": ACCOUNT_OK,
@@ -291,8 +367,23 @@ def test_live_startup_allowed_with_restricted_key():
             "withdrawal addresses": DENIED,
         }
     )
-    results = run_permission_checks(cli, TradingMode.LIVE, has_credentials=True)
-    enforce(results, TradingMode.LIVE)  # must not raise
+    enforce(live_checks(cli), TradingMode.LIVE)  # must not raise
+
+
+def test_not_verifiable_alone_does_not_block_live():
+    """If NOT_VERIFIABLE blocked, live trading would be impossible forever —
+    the futures withdrawal permission has no probeable endpoint."""
+    cli = ScriptedCli(
+        {
+            "futures accounts": ACCOUNT_OK,
+            "withdrawal methods": DENIED,
+            "withdrawal addresses": DENIED,
+        }
+    )
+    results = live_checks(cli)
+    spot = next(r for r in results if r.name == "spot_withdrawal_scope")
+    assert spot.outcome is CheckOutcome.NOT_VERIFIABLE
+    assert not spot.blocks_startup
 
 
 def test_paper_mode_warns_but_does_not_halt_on_bad_key():
@@ -303,6 +394,12 @@ def test_paper_mode_warns_but_does_not_halt_on_bad_key():
             "withdrawal methods": {"methods": []},
         }
     )
-    results = run_permission_checks(cli, TradingMode.PAPER, has_credentials=True)
+    results = run_permission_checks(
+        cli,
+        TradingMode.PAPER,
+        has_futures_credentials=True,
+        has_spot_credentials=True,
+        futures_withdrawal_attestation=ATTESTED,
+    )
     enforce(results, TradingMode.PAPER)  # must not raise
     assert any(r.blocks_startup for r in results)
