@@ -280,7 +280,10 @@ class Reconciler:
         self._sync_order_states(trade_id, snapshot, report)
 
         # 2. Exchange says flat but we think the trade is live.
-        if position is None and state.is_open and state is not TradeState.CLOSING:
+        #    CLOSING is deliberately INCLUDED: a trade left mid-close by a crash
+        #    must be finalised, and in-process a flat position means the close
+        #    already succeeded. _repair_position_gone guards the transition.
+        if position is None and state.is_open:
             report.discrepancies.append(
                 self._repair_position_gone(trade_id, symbol, state)
             )
@@ -289,7 +292,19 @@ class Reconciler:
         if position is None:
             return
 
-        # 3. Local quantity vs actual.
+        # 3. Advance the entry lifecycle label to match reality.
+        #    After a restart a trade can be filled and protected while still
+        #    labelled WAITING_FOR_ENTRY. The stop is correct either way (it is
+        #    sized from the position), but a stale label misleads an operator
+        #    and gates later TP transitions, so it is corrected here.
+        #    sync_entry_fills is idempotent and reads the installed snapshot
+        #    observer, so this stays within the consistent capture.
+        if state in (TradeState.WAITING_FOR_ENTRY, TradeState.PARTIALLY_ENTERED):
+            self.engine.sync_entry_fills(trade_id)
+            trade = self.store.get_trade(trade_id)
+            state = TradeState(trade["state"])
+
+        # 4. Local quantity vs actual.
         local_qty = Decimal(trade["actual_quantity"])
         if local_qty != position.size:
             self.store.update_trade_actuals(trade_id, actual_quantity=position.size)
@@ -302,7 +317,7 @@ class Reconciler:
                 )
             )
 
-        # 4. Protection. An open position with no stop is the single most
+        # 5. Protection. An open position with no stop is the single most
         #    dangerous state this system can be in.
         stops = [
             o for o in snapshot.orders
@@ -325,7 +340,7 @@ class Reconciler:
                 )
             )
 
-        # 5. TP total must never exceed the position (brief 13).
+        # 6. TP total must never exceed the position (brief 13).
         tps = [
             o for o in snapshot.orders
             if o.order_type == "take-profit" and o.symbol == symbol
@@ -346,7 +361,7 @@ class Reconciler:
                 )
             )
 
-        # 6. Stale entry orders (brief 12).
+        # 7. Stale entry orders (brief 12).
         expired = self.engine.expire_stale_entries(
             trade_id, datetime.now(UTC).isoformat()
         )

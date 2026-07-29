@@ -63,6 +63,7 @@ def rig(tmp_path):
     )
     reconciler = Reconciler(config=config, store=store, client=exchange,
                             engine=engine, specs=SPECS)
+    engine.mark_recovery_complete()  # fixtures bypass startup recovery
     msg = store.record_message(channel_id=-1, message_id=1, raw_text="BTC LONG")
     trade_id, uid = store.create_trade(
         origin_message_row_id=msg, origin_channel_id=-1, origin_message_id=1,

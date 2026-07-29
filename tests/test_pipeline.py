@@ -52,6 +52,7 @@ def pipe(tmp_path):
                                      default_timeout_s=0.05, default_poll_s=0.0),
         kill_switch=ks,
     )
+    engine.mark_recovery_complete()  # fixture bypasses startup recovery
     pipeline = SignalPipeline(
         config=config, store=store,
         admission=build_admission(config=config, store=store, kill_switch=ks,

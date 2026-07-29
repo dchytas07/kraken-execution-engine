@@ -86,6 +86,55 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
 
     # The attestation is an operator claim, not a machine fact, so record it in
     # the append-only log where it is attributable after the fact.
+    # -- exchange wiring + restart recovery (brief 29) -------------------
+    # No trading loop may run before recovery has reconciled against the
+    # exchange, so this happens during startup, not after it.
+    if config.trading_mode.touches_exchange:
+        from .exchange.kraken import KrakenCliAdapter
+        from .execution.engine import ExecutionEngine
+        from .execution.observer import PollingFillObserver
+        from .reconcile import Reconciler
+        from .recovery import RecoveryManager
+
+        adapter = KrakenCliAdapter(
+            build_cli(config), config.trading_mode, config.tradeable_assets
+        )
+        specs = adapter.load_specs()
+        for asset, spec in sorted(specs.items(), key=lambda kv: kv[0].value):
+            log.info(
+                f"instrument {asset.value} -> {spec.symbol} "
+                f"(increment {spec.size_increment}, tick {spec.tick_size}, "
+                f"max {spec.max_leverage}x)",
+                extra={"asset": asset.value, "symbol": spec.symbol,
+                       "action": "instrument_resolved"},
+            )
+
+        engine = ExecutionEngine(
+            config=config, store=store, client=adapter,
+            observer=PollingFillObserver(adapter),
+            kill_switch=kill_switch,
+        )
+        reconciler = Reconciler(
+            config=config, store=store, client=adapter, engine=engine,
+            specs=specs,
+        )
+        recovery = RecoveryManager(
+            config=config, store=store, client=adapter, engine=engine,
+            reconciler=reconciler, specs=specs,
+        )
+        result = recovery.recover()
+        if not result.safe_to_trade:
+            raise SafetyCheckFailed(
+                f"restart recovery did not complete safely: "
+                f"{result.blocking_reason or 'unknown'}"
+            )
+        if result.orphan_positions:
+            log.error(
+                f"orphan position(s) present: {', '.join(result.orphan_positions)} "
+                "— signals on those symbols will be refused until resolved",
+                extra={"action": "startup_orphans"},
+            )
+
     store.append_event(
         EventType.SAFETY_CHECK_PASSED,
         "startup safety checks complete",

@@ -49,6 +49,9 @@ SAFETY_FUNCTIONS = {
     "admit": "admission gate — spot boundary, dedupe, occupancy",
     "expire_stale_entries": "brief 12 — 24h entry lifetime",
     "run_once": "brief 28 — reconciliation pass",
+    "require_recovered": "brief 29 — no orders before restart recovery",
+    "mark_recovery_complete": "brief 29 — the only thing that opens the gate",
+    "recover": "brief 29 — restart recovery",
 }
 
 # Properties are accessed without parentheses, so they need their own check.

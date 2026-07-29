@@ -96,6 +96,23 @@ class ExecutionEngine:
         self.client = client
         self.observer = observer
         self.kill_switch = kill_switch
+        # brief 29: after a restart the bot must reconcile against the exchange
+        # BEFORE placing anything. Recovering after placing orders defeats the
+        # point, so this starts False and only RecoveryManager clears it.
+        self._recovery_complete = False
+
+    def mark_recovery_complete(self) -> None:
+        """Called by RecoveryManager once state has been reconciled."""
+        self._recovery_complete = True
+
+    def require_recovered(self) -> None:
+        """Gate on the trading path. Fails closed on a fresh process."""
+        if not self._recovery_complete:
+            raise ExecutionRefused(
+                "RECOVERY_INCOMPLETE",
+                "the engine has not reconciled against the exchange since "
+                "starting; refusing to open a trade (brief 29)",
+            )
 
     # ------------------------------------------------------------------
     # Danger signalling
@@ -252,6 +269,8 @@ class ExecutionEngine:
         Does NOT advance the trade past WAITING_FOR_ENTRY — nothing has filled
         yet, and only a confirmed fill may advance state.
         """
+        self.require_recovered()
+
         if not self.kill_switch.allows_new_positions():
             raise ExecutionRefused(
                 "KILL_SWITCH_ACTIVE", "kill switch engaged; no new positions"

@@ -534,3 +534,60 @@ is unverified. Mitigated by design rather than by hope: the stream only *wakes*
 the reconciler and never mutates state, so a stream bug degrades latency and
 cannot corrupt anything. Line parsing is covered by tests against injected
 lines, including malformed input. Added to §5 outstanding.
+
+---
+
+## 8. Restart recovery (Stage 8)
+
+Status: **API-VERIFIED** against the paper engine, 2026-07-29.
+
+### 8.1 Verified end-to-end
+
+Process 1 opened a trade, both entries filled, then died before syncing,
+before placing a stop, and with a leaked 3x leverage preference. Process 2,
+a genuinely fresh Store and engine over the same database file:
+
+| Check | Result |
+|---|---|
+| Gate held before recovery | refused with `RECOVERY_INCOMPLETE` |
+| Entry fills recovered | both `ADOPTED_FILLED` |
+| Local quantity | 0.0046, matching the exchange |
+| Protection | 1 stop, sized to the position |
+| Leverage | restored 3x → 10x |
+| Duplicate orders | none — 1 order total on the exchange |
+
+### 8.2 Resolving the crash window
+
+An unacknowledged order is looked up by its deterministic client order id:
+
+| Snapshot says | Outcome |
+|---|---|
+| resting | `ADOPTED_RESTING` — adopt the exchange id |
+| in fills | `ADOPTED_FILLED` — record the fill |
+| absent, symbol flat | `NEVER_PLACED` — safe to abandon |
+| absent, position exists | `AMBIGUOUS` — REQUIRES_REVIEW |
+
+The last row is the one that must not be guessed. Kraken's fills history is
+bounded, so absence is not proof an order never filled, and a position exists
+that something must account for.
+
+### 8.3 The gate
+
+`ExecutionEngine._recovery_complete` starts False on every process and is
+cleared only by `RecoveryManager`. Recovering after placing orders would defeat
+the purpose, so `open_trade` calls `require_recovered()` first. Recovery that
+cannot complete — unreadable exchange, or a position it could not protect —
+leaves the gate shut and startup exits non-zero.
+
+### 8.4 Two bugs found by the crash matrix
+
+* **A trade stuck in CLOSING was never finalised.** The reconciler excluded
+  CLOSING from its flat-position check to avoid racing an in-flight close. But
+  after a restart there is no in-flight anything, and even in-process a flat
+  position means the close succeeded. A crash between submitting a close and
+  confirming it would have left the trade CLOSING forever.
+
+* **A recovered trade kept a stale lifecycle label.** A filled, protected trade
+  stayed labelled WAITING_FOR_ENTRY. Protection was correct (the stop is sized
+  from the position, not the label), but a stale label misleads an operator and
+  gates later TP transitions. Reconciliation now advances it.

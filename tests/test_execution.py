@@ -238,6 +238,7 @@ def setup(config, store, tmp_path):
         config=config, store=store, client=exchange, observer=observer,
         kill_switch=KillSwitch(path=tmp_path / "KILL"),
     )
+    engine.mark_recovery_complete()  # fixtures bypass startup recovery
     msg = store.record_message(channel_id=-1, message_id=1, raw_text="BTC LONG")
     trade_id, trade_uid = store.create_trade(
         origin_message_row_id=msg, origin_channel_id=-1, origin_message_id=1,
