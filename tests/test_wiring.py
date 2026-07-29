@@ -18,6 +18,7 @@ whether the dangerous path invokes it. This test asserts the second thing.
 """
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,23 @@ SAFETY_FUNCTIONS = {
     "dispatch": "brief 5 — Telegram message dispatch",
     "backfill": "brief 5 — replay messages missed while disconnected",
     "last_message_id": "brief 5 — backfill high-water mark",
+    # Stage 7 reconciler repairs. Registered individually, not just via
+    # run_once: a refactor could drop one of these calls while run_once still
+    # had a call site, and the guard would pass while a repair silently
+    # disappeared.
+    "_repair_unprotected": "brief 14/16 — restore protection on an open position",
+    "_repair_position_gone": "brief 27 — close a trade the exchange says is flat",
+    "_check_orphan_positions": "orphans are reported, never auto-closed",
+    "_check_leverage_drift": "Study B — leverage drift detection",
+    "_sync_order_states": "brief 28 — catch fills the engine missed",
+    # Stage 8
+    "_resolve_trade_intents": "brief 30 — resolve the crash window",
+    # Admission
+    "check_exchange_position": "block opening into an unrecognised position",
+    # Found by test_registry_has_not_fallen_behind_the_codebase: this is what
+    # actually refuses startup in live mode, and it was never registered.
+    "enforce": "brief 25 — refuse startup on a failed safety check",
+    "_refuse": "brief 7 — every refusal carries an enumerated reason",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -298,3 +316,141 @@ def test_leverage_is_only_set_through_the_engine():
                 if name == "set_leverage_preference":
                     offenders.append(f"{rel}:{node.lineno}")
     assert not offenders, f"leverage set outside the engine at {offenders}"
+
+
+# ==========================================================================
+# The registry must GROW with the codebase
+# ==========================================================================
+#
+# The registry was written in Stage 6 and by Stage 9 had fallen behind: the
+# reconciler's repairs and recovery's intent resolver existed, were reachable
+# only through a registered entry point, and were themselves unguarded. That is
+# the same reasoning that produced the two worst findings in this build —
+# "it's called from X" asserted about X, not about the thing itself.
+#
+# This test makes falling behind a failure. A new safety-shaped function must
+# either be registered, or explicitly listed as not-a-guard with a reason.
+
+NOT_SAFETY_MECHANISMS = {
+    "_require": "config env-var reader, not a trading guard",
+    # Report/data accessors — views over results, not guards.
+    "repaired": "ReconcileReport accessor",
+    "unrepaired": "ReconcileReport accessor",
+    "clean": "ReconcileReport accessor",
+    "ambiguous": "RecoveryResult accessor",
+    "safe_to_trade": "RecoveryResult accessor",
+    "refused": "AdmissionResult accessor",
+    "blocks_startup": "CheckResult accessor",
+    "is_ambiguous": "ObservedOrder accessor",
+    "is_filled": "ObservedOrder accessor",
+    "has_any_fill": "ObservedOrder accessor",
+    "is_exact": "SizedOrder accessor",
+    "is_flat": "Position accessor",
+    "is_open": "TradeState accessor",
+    "is_live": "TradingMode accessor",
+    "is_resting": "OrderStatus accessor",
+    "is_final": "OrderStatus accessor",
+    "is_exit_like": "MessageType accessor",
+    "touches_exchange": "TradingMode accessor",
+    # Internal plumbing.
+    "check_connectivity": "covered by run_permission_checks",
+    "_check_leverage_drift": None,  # registered
+    "_is_complete_signal": "parser helper, covered by classify",
+    "is_imperative": "parser helper, covered by classify",
+    "is_known_other_asset": "parser helper, covered by resolve_asset",
+    "keyword_forms": "parser helper",
+    "has_commentary_markers": "parser helper, covered by classify",
+    "_detect_direction": "parser helper",
+    "_confidence": "parser helper",
+    "check_futures_withdrawal_attestation": None,  # registered
+    "check_spot_withdrawal_scope": "covered by run_permission_checks",
+    "has_futures_credentials": "startup helper",
+    "has_spot_credentials": "startup helper",
+    "is_engaged": "covered by allows_new_positions",
+    "allows_position_management": "documented always-True invariant",
+    "collect_secrets": "logging setup",
+    "entry_allocation_usd": "config accessor",
+    "is_tradeable": "config accessor",
+    "startup_banner": "logging",
+    "identity": "ParsedMessage accessor",
+    "is_terminal": None,  # registered as a property
+    "can_transition": "covered by assert_transition",
+    "assert_transition": "covered by transition_trade",
+    "transition_trade": "store primitive",
+    "round_to_increment": "covered by calculate_size",
+    "round_price_to_tick": "covered by calculate_size",
+    "split_entry_allocations": "covered by plan_entries",
+    "parse_instrument": "covered by resolve_specs",
+    "observe_order": "FillObserver protocol method",
+    "observe_position": "FillObserver protocol method",
+    "weighted_average_entry": "FillObserver optional method",
+    "capture": "snapshot constructor",
+    "order_by_client_id": "snapshot accessor",
+    "fills_for": "snapshot accessor",
+    "to_inbound": "covered by dispatch",
+    "handle_event": "covered by dispatch",
+    "reassert_leverage": "covered by set_leverage_preference",
+    "require_recovered": None,  # registered
+    "build_admission": "construction, asserted by its own test",
+}
+
+# Name shapes that suggest a guard rather than plumbing.
+_SAFETY_SHAPED = re.compile(
+    r"^_?(check|verify|validate|guard|enforce|refuse|repair|resolve|recover|"
+    r"admit|require|ensure|assert)_?", re.I
+)
+
+
+def test_registry_has_not_fallen_behind_the_codebase():
+    """Every safety-shaped function is registered or explicitly excused."""
+    unaccounted = []
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            name = node.name
+            if not _SAFETY_SHAPED.match(name):
+                continue
+            if name in SAFETY_FUNCTIONS or name in SAFETY_PROPERTIES:
+                continue
+            if name in NOT_SAFETY_MECHANISMS:
+                continue
+            unaccounted.append(f"{path.relative_to(SRC)}:{name}")
+
+    assert not unaccounted, (
+        "safety-shaped functions are neither registered nor excused: "
+        f"{unaccounted}. Add them to SAFETY_FUNCTIONS so the wiring guard "
+        "covers them, or to NOT_SAFETY_MECHANISMS with a reason. The registry "
+        "must grow with the codebase — it went stale once already."
+    )
+
+
+def test_excuse_list_has_no_dead_entries():
+    """An excuse for a function that no longer exists hides nothing and rots."""
+    stale = [
+        n for n, reason in NOT_SAFETY_MECHANISMS.items()
+        if reason is not None and n not in GRAPH.defined
+    ]
+    assert not stale, f"NOT_SAFETY_MECHANISMS names functions that no longer exist: {stale}"
+
+
+def test_registry_covers_every_stage_module():
+    """Each module that performs trading-critical work contributes at least one
+    registered mechanism — a module with none is a sign it was skipped."""
+    expected = {
+        "sizing.py", "admission.py", "reconcile.py", "recovery.py",
+        "execution/engine.py", "killswitch.py", "safety/permissions.py",
+        "telegram/listener.py", "exchange/specs.py",
+    }
+    covered = set()
+    for name in SAFETY_FUNCTIONS:
+        for site in _production_call_sites(name):
+            covered.add(site.rsplit(":", 1)[0])
+        for path in SRC.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name == name for n in ast.walk(tree)):
+                covered.add(str(path.relative_to(SRC)))
+    missing = expected - covered
+    assert not missing, f"modules with no registered safety mechanism: {missing}"

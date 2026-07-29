@@ -317,3 +317,75 @@ def test_last_message_id_tracks_the_high_water_mark(rig):
     run(listener.handle_event(FakeEvent(FakeMessage(5, "gm"))))
     run(listener.handle_event(FakeEvent(FakeMessage(9, "gm"))))
     assert store.last_message_id(CHANNEL_ID) == 9
+
+
+# ==========================================================================
+# Backfill must take the IDENTICAL path as a live message
+# ==========================================================================
+
+
+def test_backfill_and_live_use_the_same_dispatch(rig):
+    """Structural: both funnel through dispatch -> pipeline.handle_message."""
+    make, store, exchange = rig
+    listener, _ = make(history=[FakeMessage(1, SIGNAL)])
+    seen = []
+    original = listener.dispatch
+    listener.dispatch = lambda inbound: (seen.append(inbound), original(inbound))[1]
+
+    run(listener.start())
+    run(listener.handle_event(FakeEvent(FakeMessage(2, "gm"))))
+
+    assert len(seen) == 2, "one of the two paths bypassed dispatch"
+
+
+def test_stale_signal_arriving_via_backfill_is_refused(rig):
+    """A signal stale because it arrived LATE must be refused exactly like one
+    stale because price moved. Arriving via backfill is not an exemption."""
+    make, store, exchange = rig
+    exchange.mark = D(75000)  # far beyond the 64000/63500 entry range
+    listener, _ = make(history=[FakeMessage(1, SIGNAL)])
+
+    run(listener.start())
+
+    assert store.get_message(CHANNEL_ID, 1)["rejection_reason"] == "STALE_ENTRY"
+    assert exchange.orders == {}, "a stale backfilled signal reached the exchange"
+
+
+def test_fresh_signal_via_backfill_still_executes(rig):
+    """The guard must not over-reject: a still-valid replay should trade."""
+    make, store, exchange = rig
+    exchange.mark = D(63800)  # inside the range
+    listener, _ = make(history=[FakeMessage(1, SIGNAL)])
+    run(listener.start())
+    assert len(exchange.orders) == 2
+
+
+def test_spot_signal_via_backfill_is_still_refused(rig):
+    make, store, exchange = rig
+    listener, _ = make(history=[FakeMessage(1, "BTC spot buy and hold")])
+    run(listener.start())
+    assert store.get_message(CHANNEL_ID, 1)["rejection_reason"] == "SPOT_SIGNAL"
+    assert exchange.orders == {}
+
+
+def test_kill_switch_blocks_backfilled_signals_too(rig):
+    make, store, exchange = rig
+    listener, _ = make(history=[FakeMessage(1, SIGNAL)])
+    KillSwitch(path=listener.pipeline.config.kill_switch_path).engage()
+    run(listener.start())
+    assert exchange.orders == {}
+
+
+def test_backfilled_duplicate_signal_is_deduplicated(rig):
+    """Content dedup applies to replays, not just live messages."""
+    make, store, exchange = rig
+    exchange.mark = D(63800)
+    listener, _ = make()
+    run(listener.handle_event(FakeEvent(FakeMessage(1, SIGNAL))))
+    before = len(exchange.orders)
+
+    reformatted = SIGNAL.lower().replace("\n", "\n ")
+    listener2, _ = make(history=[FakeMessage(2, reformatted)])
+    run(listener2.start())
+
+    assert len(exchange.orders) == before, "a reformatted replay opened a second trade"

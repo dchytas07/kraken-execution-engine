@@ -92,6 +92,41 @@ class SignalAdmission:
         )
         return AdmissionResult(False, decision, reason, detail)
 
+    def check_exchange_position(
+        self, symbol: str, message_row_id: int
+    ) -> AdmissionResult | None:
+        """Refuse if the exchange holds a position we cannot account for.
+
+        Returns None when it is safe to proceed. Named rather than inline so
+        the wiring guard can see it — an unwired version of this check is what
+        allowed opening into an orphan position.
+        """
+        if self.position_for is None:
+            return None
+        try:
+            position = self.position_for(symbol)
+        except Exception as exc:
+            # Cannot verify -> cannot trade (brief 40).
+            return self._refuse(
+                message_row_id,
+                RejectionReason.POSITION_CHECK_FAILED,
+                f"could not read the live {symbol} position: {exc}",
+            )
+        if position is not None and not position.is_flat:
+            log.error(
+                f"refusing {symbol}: an unrecognised position of "
+                f"{position.size} exists on the exchange with no local trade",
+                extra={"symbol": symbol, "action": "unrecognised_position"},
+            )
+            return self._refuse(
+                message_row_id,
+                RejectionReason.UNRECOGNISED_POSITION,
+                f"{symbol} holds {position.size} on the exchange with no "
+                "matching local trade; opening would net into it",
+                decision=ExecutionDecision.REQUIRES_REVIEW,
+            )
+        return None
+
     def admit(
         self, parsed: ParsedMessage, message_row_id: int
     ) -> AdmissionResult:
@@ -221,29 +256,10 @@ class SignalAdmission:
         #
         #     Refuse instead. An operator's manual position is not ours to
         #     absorb.
-        if symbol and self.position_for is not None:
-            try:
-                position = self.position_for(symbol)
-            except Exception as exc:
-                # Cannot verify -> cannot trade (brief 40).
-                return self._refuse(
-                    message_row_id,
-                    RejectionReason.POSITION_CHECK_FAILED,
-                    f"could not read the live {symbol} position: {exc}",
-                )
-            if position is not None and not position.is_flat:
-                log.error(
-                    f"refusing {symbol}: an unrecognised position of "
-                    f"{position.size} exists on the exchange with no local trade",
-                    extra={"symbol": symbol, "action": "unrecognised_position"},
-                )
-                return self._refuse(
-                    message_row_id,
-                    RejectionReason.UNRECOGNISED_POSITION,
-                    f"{symbol} holds {position.size} on the exchange with no "
-                    "matching local trade; opening would net into it",
-                    decision=ExecutionDecision.REQUIRES_REVIEW,
-                )
+        if symbol:
+            refusal = self.check_exchange_position(symbol, message_row_id)
+            if refusal is not None:
+                return refusal
 
         # 8. Kill switch, checked last so earlier refusals record their real
         #    reason rather than being masked by it.
