@@ -222,6 +222,19 @@ class ExecutionEngine:
             )
         return mark
 
+    def reassert_leverage(self, symbol: str) -> Decimal:
+        """Re-apply the configured leverage cap to a symbol.
+
+        The ONLY sanctioned leverage mutation outside open_trade. Reconciliation
+        calls this rather than touching the exchange directly, so the cap is
+        applied in one place — enforced by
+        tests/test_wiring.py::test_leverage_is_only_set_through_the_engine.
+
+        Safe to call with a position open: Study B(a) established that
+        set-leverage does not re-margin an existing position.
+        """
+        return self.client.set_leverage_preference(symbol, self.config.max_leverage)
+
     # ------------------------------------------------------------------
     # Entry
     # ------------------------------------------------------------------
@@ -439,7 +452,15 @@ class ExecutionEngine:
         trigger = round_price_to_tick(
             trigger_price, spec.tick_size, round_up=direction is Direction.SHORT
         )
-        coid = client_order_id(trade_uid, OrderPurpose.STOP_LOSS, 1)
+        # Sequence, not a fixed 1. A stop may legitimately be placed more than
+        # once for one trade — reconciliation restores protection when a stop is
+        # cancelled out of band. Reusing SL-1 hit the UNIQUE constraint on
+        # client_order_id and left the position UNPROTECTED, which is the exact
+        # failure reconciliation exists to repair.
+        # Still deterministic and enumerable: recovery walks SL-1, SL-2, ... and
+        # asks the exchange which of them exist.
+        sequence = self._next_stop_sequence(trade_id)
+        coid = client_order_id(trade_uid, OrderPurpose.STOP_LOSS, sequence)
 
         order_id, order_uid = self.store.record_order_intent(
             trade_id=trade_id,
@@ -452,7 +473,7 @@ class ExecutionEngine:
             trigger_price=trigger,
             trigger_signal="mark",
             reduce_only=True,
-            sequence=1,
+            sequence=sequence,
         )
 
         result = self.client.place_order(
@@ -1048,6 +1069,9 @@ class ExecutionEngine:
                     self.store.update_order(row["id"], status=OrderStatus.EXPIRED)
                     expired += 1
         return expired
+
+    def _next_stop_sequence(self, trade_id: int) -> int:
+        return len(self.store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)) + 1
 
     def _next_close_sequence(self, trade_id: int) -> int:
         return len(self.store.orders_for_trade(trade_id, OrderPurpose.CLOSE)) + 1

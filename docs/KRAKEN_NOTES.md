@@ -491,3 +491,46 @@ Per-order reads and the position read are separate calls, so an entry filling
 between them produces PARTIALLY_ENTERED alongside a full-size position. This
 errs conservative, protection is sized from the actual position, and repeated
 syncs converge — Stage 7's consistent snapshot removes it entirely.
+
+---
+
+## 7. Reconciliation (Stage 7)
+
+Status: **API-VERIFIED** against the paper engine, 2026-07-29.
+
+### 7.1 Verified repairs
+
+Injected genuine out-of-band divergence and confirmed each repair:
+
+| Injected | Detected | Repair |
+|---|---|---|
+| stop cancelled externally | `UNPROTECTED_POSITION` | stop restored from stored intent |
+| stop cancelled externally | `ORDER_MISSING_ON_EXCHANGE` | reported, not guessed as CANCELLED |
+| leverage set to 3x out of band | `LEVERAGE_DRIFT` | re-asserted to 10x via the engine |
+
+Second cycle clean in every case, so repairs converge rather than oscillate.
+
+### 7.2 The Stage 6 race, observed and repaired in production conditions
+
+A first reconciliation cycle on an apparently healthy trade flagged
+`FILL_NOT_RECORDED`: entry 2 had filled *after* `sync_entry_fills` read it as
+OPEN, so the local row disagreed with the exchange. This is the non-atomic-read
+race documented in §6.3 — not a false positive, but the safety net catching
+what the fast path missed. The consistent snapshot prevents it *within* a
+cycle; the loop catches it *across* cycles.
+
+### 7.3 Stop replacement needs a sequence, not a fixed id
+
+Restoring a cancelled stop reused client order id `{trade}-SL-1`, which hit the
+UNIQUE constraint on `client_order_id` and left the position **unprotected** —
+the precise failure reconciliation exists to repair. Stop client order ids are
+now sequenced (`SL-1`, `SL-2`, …). Still deterministic and enumerable, so crash
+recovery can walk the sequence and ask the exchange which exist.
+
+### 7.4 WebSocket fast path — untestable without credentials
+
+`futures ws fills` is auth-only with no paper equivalent, so the stream itself
+is unverified. Mitigated by design rather than by hope: the stream only *wakes*
+the reconciler and never mutates state, so a stream bug degrades latency and
+cannot corrupt anything. Line parsing is covered by tests against injected
+lines, including malformed input. Added to §5 outstanding.

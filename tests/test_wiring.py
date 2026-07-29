@@ -47,6 +47,8 @@ SAFETY_FUNCTIONS = {
     "run_permission_checks": "brief 25 — API key permissions",
     "set_leverage_preference": "Study B — leverage set-and-verify",
     "admit": "admission gate — spot boundary, dedupe, occupancy",
+    "expire_stale_entries": "brief 12 — 24h entry lifetime",
+    "run_once": "brief 28 — reconciliation pass",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -59,12 +61,15 @@ SAFETY_PROPERTIES = {
 # not on this list and not called is a failure. Entries must be removed as
 # their stage lands — leaving one here after its stage ships is itself a bug.
 PENDING_WIRING = {
-    "expire_stale_entries": "Stage 7 — needs the periodic reconciliation loop",
-    "cancel_remaining_entries": "Stage 7 — reconciliation cleanup; _finalise_close "
-                                "already covers the close path (proven by "
-                                "test_close_cancels_entry_orders_satisfying_brief_11)",
     "handle_message": "Stage 9 — needs the Telegram listener",
 }
+
+# Wired in Stage 7 and removed from PENDING_WIRING:
+#   expire_stale_entries     -> Reconciler._reconcile_trade
+#   cancel_remaining_entries -> retained as a public helper; the close path is
+#                               covered by _finalise_close (proven by
+#                               test_close_cancels_entry_orders_satisfying_brief_11)
+#                               and reconciliation cancels leftovers directly.
 
 
 class _CallGraph:
