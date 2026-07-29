@@ -254,7 +254,7 @@ ENTRIES = (D(64000), D(63500))
 
 def planned(engine):
     return engine.plan_entries(
-        spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES, leverage=D(10)
+        spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES, signal_leverage=D(10)
     )
 
 
@@ -282,7 +282,7 @@ def test_margin_is_split_not_contracts(setup):
     engine, *_ = setup
     plan = engine.plan_entries(
         spec=BTC, direction=Direction.LONG,
-        entry_prices=(D(64000), D(32000)), leverage=D(10),
+        entry_prices=(D(64000), D(32000)), signal_leverage=D(10),
     )
     _, s1 = plan.entries[0]
     _, s2 = plan.entries[1]
@@ -1181,3 +1181,105 @@ def test_deviation_just_beyond_tolerance_refused(setup):
     with pytest.raises(ExecutionRefused, match="STALE_ENTRY"):
         engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
                           plan=planned(engine))
+
+
+# ==========================================================================
+# Leverage cap on the REAL path (brief 9) — was unwired
+# ==========================================================================
+
+
+@pytest.mark.parametrize("requested", ["20", "25", "50", "100"])
+def test_signal_leverage_capped_before_reaching_the_exchange(setup, requested):
+    """REGRESSION: effective_leverage had zero production call sites, so a 50x
+    signal would have been set on the account as 50x."""
+    engine, exchange, store, trade_id, uid = setup
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(requested))
+    assert plan.leverage == D(10)
+
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    assert exchange.leverage["PF_XBTUSD"] == D(10), "uncapped leverage hit the exchange"
+
+
+def test_lower_signal_leverage_is_respected(setup):
+    engine, exchange, store, trade_id, uid = setup
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(3))
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    assert exchange.leverage["PF_XBTUSD"] == D(3)
+
+
+def test_missing_signal_leverage_uses_configured_default(setup):
+    engine, exchange, store, trade_id, uid = setup
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=None)
+    assert plan.leverage == D(10)
+
+
+def test_exchange_max_leverage_wins_when_lower(setup):
+    from dataclasses import replace
+    engine, exchange, store, trade_id, uid = setup
+    low = replace(BTC, max_leverage=D(4))
+    plan = engine.plan_entries(spec=low, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(10))
+    assert plan.leverage == D(4)
+
+
+def test_tampered_plan_exceeding_cap_is_refused_at_submission(setup):
+    """Defence in depth: even a hand-built plan cannot exceed the cap."""
+    from dataclasses import replace
+    engine, exchange, store, trade_id, uid = setup
+    plan = replace(planned(engine), leverage=D(50))
+    with pytest.raises(ExecutionRefused, match="LEVERAGE_EXCEEDS_CAP"):
+        engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    assert "PF_XBTUSD" not in exchange.leverage
+
+
+# ==========================================================================
+# Entry expiry (brief 12) — expires_at was never set
+# ==========================================================================
+
+
+def test_entry_orders_carry_an_expiry(setup):
+    engine, exchange, store, trade_id, uid = setup
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=planned(engine))
+    for row in store.orders_for_trade(trade_id, OrderPurpose.ENTRY):
+        assert row["expires_at"] is not None, "expiry sweep would have nothing to act on"
+
+
+def test_expired_entries_are_cancelled(setup):
+    engine, exchange, store, trade_id, uid = setup
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=planned(engine))
+    assert engine.expire_stale_entries(trade_id, "2099-01-01T00:00:00+00:00") == 2
+    assert exchange.get_open_orders() == []
+
+
+def test_unexpired_entries_are_left_alone(setup):
+    engine, exchange, store, trade_id, uid = setup
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=planned(engine))
+    assert engine.expire_stale_entries(trade_id, "2000-01-01T00:00:00+00:00") == 0
+    assert len(exchange.get_open_orders()) == 2
+
+
+def test_close_cancels_entry_orders_satisfying_brief_11(setup):
+    """cancel_remaining_entries is unused because _finalise_close already
+    cancels EVERY purpose including entries. Proven rather than assumed."""
+    engine, exchange, store, trade_id, uid = setup
+    plan, coids = entered(engine, exchange, trade_id, uid, both=False)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    original_place = exchange.place_order
+    def place_and_fill(request):
+        result = original_place(request)
+        if request.purpose is OrderPurpose.CLOSE:
+            exchange.fill(request.client_order_id, request.size, D(65000))
+        return result
+    exchange.place_order = place_and_fill
+
+    assert engine.close_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                              direction=Direction.LONG) is True
+    entry_rows = store.orders_for_trade(trade_id, OrderPurpose.ENTRY)
+    assert all(OrderStatus(r["status"]).is_final for r in entry_rows)
+    assert exchange.get_open_orders() == []

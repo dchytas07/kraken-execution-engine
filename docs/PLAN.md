@@ -491,3 +491,73 @@ semantics are observable, then confirmed live read-only where safe.
 - Real minimum order size / min notional, via a deliberate live rejection (Stage 4).
 - XAUT tracking error vs spot gold (Stage 4, Study A) — gates GOLD entirely.
 - Leverage state semantics (Stage 4, Study B) — feeds reconciliation and recovery.
+
+---
+
+## 9. Unwired-safety-mechanism sweep (2026-07-29)
+
+A systematic grep for functions whose name or docstring claims to enforce a
+brief requirement, checking each for a call site reachable from the real
+execution path — not from a test file or an integration script.
+
+The same bug had already appeared twice by hand (`check_entry_freshness`,
+`resize_stop_to_position`), so it was swept for mechanically rather than by
+re-reasoning about each component.
+
+### Found unwired
+
+| Mechanism | Requirement | Severity |
+|---|---|---|
+| `effective_leverage` | brief 9 — **10x cap** | 🔴 critical |
+| whole admission layer | brief 4/7/8/21/23 | 🔴 critical |
+| `expire_stale_entries` | brief 12 — 24h entry expiry | 🟠 |
+| `cancel_remaining_entries` | brief 11 | 🟢 redundant |
+
+**The leverage cap was the worst.** `effective_leverage` had five passing unit
+tests and zero production call sites. Leverage flowed caller → `plan_entries`
+→ `set_leverage_preference` → exchange, uncapped, so a 50x signal would have
+set 50x on the account. The single most important risk constraint in the brief
+was unenforced.
+
+**Five mechanisms had no caller because their layer did not exist.** The spot
+boundary, whitelist, duplicate detection, one-trade-per-symbol and decision
+recording all belonged to a signal→trade admission gate that was never built —
+Stage 3 produced the parser, Stage 6 the engine, and nothing joined them. The
+brief's hard safety line (§8, spot never becomes leveraged) had zero production
+enforcement.
+
+### Confirmed already wired
+
+Kill switch (`open_trade`), insufficient-margin (`open_trade`), instrument
+validation, TP-total-never-exceeds-position, stop verification, close
+confirmation.
+
+`cancel_remaining_entries` is genuinely redundant: `_finalise_close` cancels
+every order purpose including entries. Proven by a test rather than assumed.
+
+### Fixes
+
+- `plan_entries` now takes `signal_leverage` and caps it internally; the
+  parameter was renamed so an already-final value cannot be passed in. A second
+  check before `set_leverage_preference` refuses a tampered plan.
+- New `admission.py` — the missing gate, with every refusal carrying an
+  enumerated reason.
+- New `pipeline.py` — message → parse → persist → admit → create → open, so
+  admission has a caller on the real path.
+- Entry orders now carry `expires_at`; without it the expiry sweep had nothing
+  to act on even once called.
+
+### Durable fix
+
+`tests/test_wiring.py` turns the sweep into a permanent test: every registered
+safety mechanism must have a production call site, or the suite fails.
+Mechanisms awaiting a future stage sit in `PENDING_WIRING` with a named owner,
+and a second test fails if one becomes wired without leaving that list — so an
+exemption cannot outlive its reason.
+
+The guard was verified by deliberately removing the leverage-cap call site and
+confirming it fails. A guard that cannot fail is the same trap it exists to
+catch.
+
+**Lesson:** a passing unit test proves a guard computes correctly. It says
+nothing about whether the dangerous path invokes it. Both need asserting.

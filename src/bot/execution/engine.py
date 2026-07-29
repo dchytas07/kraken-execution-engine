@@ -19,6 +19,7 @@ Three rules govern every method here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from ..config import Config
@@ -37,6 +38,7 @@ from ..models import (
 from ..sizing import (
     SizingError,
     calculate_size,
+    effective_leverage,
     check_sufficient_margin,
     is_entry_stale,
     round_price_to_tick,
@@ -128,15 +130,36 @@ class ExecutionEngine:
         spec: InstrumentSpec,
         direction: Direction,
         entry_prices: tuple[Decimal, ...],
-        leverage: Decimal,
+        signal_leverage: Decimal | None,
     ) -> EntryPlan:
         """Split margin 50/50 across the entry prices and size each one.
 
         Margin is split, not contracts: the two entries sit at different prices,
         so equal margin yields different sizes (brief 11).
+
+        Takes the SIGNAL's requested leverage and caps it here. The parameter is
+        deliberately named `signal_leverage` rather than `leverage`: the previous
+        signature accepted an already-final value, and no caller applied the cap,
+        so a 50x signal would have reached the exchange as 50x. The cap now lives
+        on the only path that can build a plan, and cannot be bypassed by a
+        caller passing a bigger number.
         """
         if not entry_prices:
             raise ExecutionRefused("NO_ENTRY_PRICES")
+
+        # brief 9: min(signal, internal cap, exchange max)
+        leverage = effective_leverage(
+            signal_leverage,
+            max_leverage=self.config.max_leverage,
+            default_leverage=self.config.default_leverage,
+            exchange_max_leverage=spec.max_leverage,
+        )
+        if signal_leverage is not None and leverage < signal_leverage:
+            log.warning(
+                f"leverage capped {signal_leverage}x -> {leverage}x for "
+                f"{spec.symbol}",
+                extra={"symbol": spec.symbol, "action": "leverage_capped"},
+            )
 
         allocations = split_entry_allocations(
             self.config.trade_margin_usd, len(entry_prices)
@@ -215,9 +238,21 @@ class ExecutionEngine:
 
         # Leverage is per-symbol account state and leaks across trades, so it is
         # set and verified immediately before opening (KRAKEN_NOTES 1C).
+        if plan.leverage > self.config.max_leverage:
+            raise ExecutionRefused(
+                "LEVERAGE_EXCEEDS_CAP",
+                f"plan carries {plan.leverage}x but the hard cap is "
+                f"{self.config.max_leverage}x — refusing to set it",
+            )
         self.client.set_leverage_preference(spec.symbol, plan.leverage)
 
         self.store.transition_trade(trade_id, TradeState.WAITING_FOR_ENTRY)
+
+        # brief 12: resting entries get a bounded lifetime. Without this the
+        # expiry sweep has nothing to act on.
+        expires_at = (
+            datetime.now(UTC) + timedelta(hours=self.config.entry_order_expiry_hours)
+        ).isoformat()
 
         submitted: list[str] = []
         for index, (price, size) in enumerate(plan.entries, start=1):
@@ -236,6 +271,7 @@ class ExecutionEngine:
                 quantity=size,
                 price=price,
                 sequence=index,
+                expires_at=expires_at,
             )
             self.store.append_event(
                 EventType.ORDER_INTENT_RECORDED,
