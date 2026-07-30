@@ -1,34 +1,96 @@
-[    0.0s] start: soak begins; marks ['PF_XBTUSD=63873.10', 'PF_ETHUSD=1905.15', 'PF_SOLUSD=73.54']
-[    0.0s] bot: started pid=22276
+[    0.0s] start: soak begins; marks ['PF_XBTUSD=63898.82', 'PF_ETHUSD=1905.67', 'PF_SOLUSD=73.50']
+[    0.0s] bot: started pid=29251
 [   21.0s] inject: S1-spot (message 1)
 [   35.5s] inject: S2-commentary (message 2)
 [   51.9s] inject: S3-xrp (message 3)
 [   66.3s] inject: S4-gold (message 4)
 [   80.3s] inject: S5-incomplete (message 5)
-[   96.8s] inject: S6-ambiguous-close (message 6)
-[  111.2s] inject: S7-stale (message 7)
-[  142.6s] inject: S12-btc-50x (message 8)
-[  145.1s] !! VIOLATION I7: messages with no decision: ['-999000001/8']
-[  180.9s] inject: S13-eth (message 9)
-[  188.6s] !! VIOLATION I7: messages with no decision: ['-999000001/9']
-[  232.7s] inject: S10-occupied (message 10)
-[  301.1s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
-[  421.0s] error: scenario S18 raised: 'KrakenCliAdapter' object has no attribute 'client'
-[  742.9s] kill: SIGKILLed bot; 10 orders resting
-[  742.9s] bot: started pid=26254
-[  742.9s] restart: bot restarted; recovery will run
-[  782.4s] post-restart: order count unchanged at 10
-[  902.9s] inject-divergence: opened a manual 1.0 SOL position (S19)
-[  962.2s] inject: S11-orphan-symbol (message 11)
-[ 1081.7s] inject: S15-partial (message 12)
-[ 1321.0s] inject: S16-close-eth (message 13)
-[ 1500.2s] inject: S16-close-all (message 14)
+[   95.3s] inject: S6-ambiguous-close (message 6)
+[  111.8s] inject: S7-stale (message 7)
+[  141.1s] inject: S12-btc-50x (message 8)
+[  181.9s] inject: S13-eth (message 9)
+[  231.0s] inject: S10-occupied (message 10)
+[  302.3s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
+[  421.4s] error: scenario S18 raised: 'KrakenCliAdapter' object has no attribute 'client'
+[  720.6s] kill: SIGKILLed bot; 10 orders resting
+[  731.6s] bot: started pid=33267
+[  731.6s] restart: bot restarted; recovery will run
+[  787.7s] error: scenario S21-S23 raised: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  796.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  816.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  838.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  860.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  882.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  904.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  917.6s] inject-divergence: opened a manual 1.0 SOL position (S19)
+[  925.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  945.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  964.2s] inject: S11-orphan-symbol (message 11)
+[  970.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[  988.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1010.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1032.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1052.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1072.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1080.1s] inject: S15-partial (message 12)
+[ 1094.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1116.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1136.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1156.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1176.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1198.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1218.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1240.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1261.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1282.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1302.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1324.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1326.9s] inject: S16-close-eth (message 13)
+[ 1345.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1365.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1385.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1405.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1426.5s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1447.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1468.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1488.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1500.9s] inject: S16-close-all (message 14)
+[ 1509.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1530.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1550.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1572.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1594.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1616.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1636.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1656.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1678.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1700.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1720.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1740.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1760.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1783.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[ 1804.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+Traceback (most recent call last):
+  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m90[0m, in [35m_run[0m
+    return [31mself.cli.run[0m[1;31m(*args)[0m.data
+           [31m~~~~~~~~~~~~[0m[1;31m^^^^^^^[0m
+  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/cli.py"[0m, line [35m167[0m, in [35mrun[0m
+    raise KrakenCliError(
+        category, str(data.get("message", raw)), argv
+    )
+[1;35mbot.exchange.cli.KrakenCliError[0m: [35m[validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.[0m
 
-======================================================================
-VERDICT: FAIL
-violations           : 2
-unexplained repairs  : {'ORDER_MISSING_ON_EXCHANGE': 1, 'orphan position PF_SOLUSD 1.0': 15}
-decisions            : {'EXECUTED': 3, 'IGNORED': 4, 'REJECTED': 4, 'REQUIRES_REVIEW': 3}
-rejection reasons    : {'SPOT_SIGNAL': 1, 'NOT_EXECUTABLE_TYPE': 2, 'UNSUPPORTED_ASSET': 1, 'GOLD_PINNED_OFF': 1, 'MISSING_FIELDS': 1, 'STALE_ENTRY': 1, 'SYMBOL_ALREADY_ACTIVE': 1, 'UNRECOGNISED_POSITION': 1}
-final positions      : {'PF_XBTUSD': '0.0046', 'PF_SOLUSD': '1.0'}
-report               : /home/user/projects/kraken-signal-bot/soak/report.json
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File [35m"/home/user/projects/kraken-signal-bot/tools/soak_run.py"[0m, line [35m458[0m, in [35m<module>[0m
+    raise SystemExit([31mmain[0m[1;31m()[0m)
+                     [31m~~~~[0m[1;31m^^[0m
+  File [35m"/home/user/projects/kraken-signal-bot/tools/soak_run.py"[0m, line [35m398[0m, in [35mmain[0m
+    final_positions = {p.symbol: str(p.size) for p in [31madapter().get_open_positions[0m[1;31m()[0m}
+                                                      [31m~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m[1;31m^^[0m
+  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m142[0m, in [35mget_open_positions[0m
+    data = self._run(*self._futures("positions"))
+  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m92[0m, in [35m_run[0m
+    raise ExchangeError(str(exc), retryable=exc.retryable) from exc
+[1;35mbot.exchange.base.ExchangeError[0m: [35m[validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.[0m

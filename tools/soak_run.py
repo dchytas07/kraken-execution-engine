@@ -36,6 +36,9 @@ BOT_LOG = RUN / "bot.jsonl"
 REPORT = RUN / "report.json"
 CHANNEL = -999000001
 
+PAPER_LOCK = Path.home() / ("Library/Application Support/kraken/paper/"
+                            "futures_state.json.lock")
+
 DURATION = float(os.environ.get("SOAK_DURATION", "1800"))   # 30 min
 KILL_AT = float(os.environ.get("SOAK_KILL_AT", "720"))      # 12 min
 CHECK_EVERY = 20.0
@@ -43,6 +46,8 @@ ASSETS = frozenset({CanonicalAsset.BTC, CanonicalAsset.ETH, CanonicalAsset.SOL})
 
 violations: list[dict] = []
 events: list[dict] = []
+checks_attempted = [0]
+checks_verified = [0]
 # Divergences we injected on purpose, so their repairs are explained.
 expected_repairs: Counter = Counter()
 observed_repairs: Counter = Counter()
@@ -93,6 +98,43 @@ def start_bot() -> subprocess.Popen:
     )
     log("bot", f"started pid={proc.pid}")
     return proc
+
+
+def clear_stale_paper_lock(reason: str) -> bool:
+    """Remove kraken-cli's orphaned paper-state lock.
+
+    SIGKILL cannot run cleanup, so the lock file survives the crash and every
+    subsequent paper read fails. This is an artifact of paper mode's local
+    state file — live has no equivalent — and clearing it is what a process
+    supervisor would do on restart. It is NOT masking a bot defect: the bot
+    never writes this file.
+    """
+    if PAPER_LOCK.exists():
+        PAPER_LOCK.unlink()
+        log("lock", f"cleared orphaned paper lock ({reason})")
+        return True
+    return False
+
+
+def with_lock_retry(fn, *, attempts: int = 6, delay: float = 1.5):
+    """Retry a paper read through transient lock contention.
+
+    The orchestrator and the bot both read paper state, and kraken-cli
+    serialises access with a lock file. Contention is expected; giving up on
+    the first collision is what blinded run 2.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last = exc
+            if "locked by another process" not in str(exc):
+                raise
+            if i == attempts - 2:
+                clear_stale_paper_lock("persistent contention")
+            time.sleep(delay)
+    raise last
 
 
 def kraken(*args) -> dict:
@@ -231,6 +273,8 @@ def main() -> int:
     RUN.mkdir(parents=True)
     INBOX.mkdir(); DONE.mkdir()
 
+    if PAPER_LOCK.exists():
+        PAPER_LOCK.unlink()
     subprocess.run(["kraken", "futures", "paper", "reset", "--yes", "-o", "json"],
                    capture_output=True)
     subprocess.run(["kraken", "futures", "paper", "init", "--balance", "10000",
@@ -305,7 +349,7 @@ def main() -> int:
 
     def leak_leverage():
         a = adapter()
-        a.client.run("futures", "paper", "set-leverage", "PF_SOLUSD", "3")
+        a.cli.run("futures", "paper", "set-leverage", "PF_SOLUSD", "3")
         expected_repairs["LEVERAGE_DRIFT"] += 1
         log("inject-divergence", "set PF_SOLUSD leverage to 3x (S18)")
     at(420, leak_leverage, "S18")
@@ -315,13 +359,14 @@ def main() -> int:
 
     def kill_bot():
         a = adapter()
-        state["pre_kill_orders"] = len(a.get_open_orders())
+        state["pre_kill_orders"] = len(with_lock_retry(a.get_open_orders))
         state["proc"].send_signal(signal.SIGKILL)
         state["proc"].wait()
         log("kill", f"SIGKILLed bot; {state['pre_kill_orders']} orders resting")
     at(KILL_AT, kill_bot, "S20-kill")
 
     def restart_bot():
+        clear_stale_paper_lock("after SIGKILL")
         state["proc"] = start_bot()
         log("restart", "bot restarted; recovery will run")
     at(KILL_AT + 10, restart_bot, "S20-restart")
@@ -381,10 +426,19 @@ def main() -> int:
 
         if elapsed - last_check >= CHECK_EVERY:
             last_check = elapsed
+            checks_attempted[0] += 1
             try:
-                check_invariants(adapter(), store, allow_orphan=allow_orphan)
+                with_lock_retry(
+                    lambda: check_invariants(adapter(), store,
+                                             allow_orphan=allow_orphan)
+                )
+                checks_verified[0] += 1
             except Exception as exc:
-                log("error", f"invariant check failed: {exc}")
+                # "Could not verify" is NOT "verified fine". Run 2 logged these
+                # and reported 0 violations while the checker was blind for half
+                # the run. Same principle the bot applies to an unverifiable
+                # stop: inability to confirm is itself a failure.
+                violate("UNVERIFIABLE", f"invariant check could not run: {exc}")
 
         if state["proc"].poll() is not None and elapsed > KILL_AT + 20:
             stderr = state["proc"].stderr.read() if state["proc"].stderr else ""
@@ -395,7 +449,11 @@ def main() -> int:
 
     # -- verdict ---------------------------------------------------------
     collect_repairs(store)
-    final_positions = {p.symbol: str(p.size) for p in adapter().get_open_positions()}
+    clear_stale_paper_lock("verdict")
+    final_positions = {
+        p.symbol: str(p.size)
+        for p in with_lock_retry(lambda: adapter().get_open_positions())
+    }
     final_trades = [
         {"id": t["id"], "symbol": t["symbol"], "state": t["state"]}
         for t in store._conn.execute("SELECT id, symbol, state FROM trades").fetchall()
@@ -424,12 +482,23 @@ def main() -> int:
     }
 
     state["proc"].send_signal(signal.SIGTERM)
+    # A run in which the checker could not see cannot pass.
+    verified_ratio = (checks_verified[0] / checks_attempted[0]
+                      if checks_attempted[0] else 0.0)
+    if verified_ratio < 0.95:
+        violate("COVERAGE",
+                f"only {checks_verified[0]}/{checks_attempted[0]} invariant "
+                f"checks completed ({verified_ratio:.0%}); the run is not "
+                "verifiable")
+
     passed = not violations and not unexplained
 
     report = {
         "generated_at": datetime.now(UTC).isoformat(),
         "duration_s": DURATION,
         "verdict": "PASS" if passed else "FAIL",
+        "checks_attempted": checks_attempted[0],
+        "checks_verified": checks_verified[0],
         "violations": violations,
         "expected_repairs": dict(expected_repairs),
         "observed_repairs": dict(observed_repairs),
@@ -444,6 +513,7 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     print(f"VERDICT: {report['verdict']}")
+    print(f"checks verified      : {checks_verified[0]}/{checks_attempted[0]}")
     print(f"violations           : {len(violations)}")
     print(f"unexplained repairs  : {unexplained or 'none'}")
     print(f"decisions            : {dict(decisions)}")
