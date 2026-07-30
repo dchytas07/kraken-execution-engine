@@ -1,10 +1,12 @@
 """The production run loop.
 
-Three cadences, ordered by how urgent the work is and how much it costs.
+Four cadences, ordered by how urgent the work is and how much it costs.
 
     protection sweep   ~2s    TWO exchange reads, O(1) in orders
     forward step      ~15s    O(open orders) — measured 17-50s with 3 trades
     reconciliation      60s   full snapshot, the safety net
+    digest check       300s   one indexed query; the real 24h interval is
+                              persisted in the DB, not held in this process
 
 The split exists because measurement forced it (tools/measure_tick.py): a full
 `step_all` costs 17s median and 50s worst with only three trades, because it
@@ -23,6 +25,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from .alerting import send_unresolved_digest
 from .execution.manager import PROTECTION_SLA_SECONDS, TradeManager
 from .logging_setup import get_logger
 from .reconcile import Reconciler
@@ -35,6 +38,11 @@ class LoopIntervals:
     sweep_seconds: float = 2.0
     manage_seconds: float = 15.0
     reconcile_seconds: float = 60.0
+    # How often to CHECK whether the 24h digest is due — not the digest
+    # interval itself, which is enforced by a persisted event marker so it
+    # survives restarts (see alerting.send_unresolved_digest). The check is
+    # one indexed query, so this is cheap.
+    digest_check_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         # The sweep is what delivers the SLA, so it must have room for several
@@ -51,6 +59,7 @@ class LoopStats:
     sweeps: int = 0
     manages: int = 0
     reconciles: int = 0
+    digests_sent: int = 0
     protected: list[str] = field(default_factory=list)
     errors: int = 0
 
@@ -64,13 +73,20 @@ class BotRunner:
         manager: TradeManager,
         reconciler: Reconciler,
         intervals: LoopIntervals | None = None,
+        store=None,
+        config=None,
     ) -> None:
         self.manager = manager
         self.reconciler = reconciler
         self.intervals = intervals or LoopIntervals()
+        # Optional: the digest is skipped entirely unless both are supplied,
+        # so a caller that does not want alerting simply omits them.
+        self.store = store
+        self.config = config
         self.stats = LoopStats()
         self._last_manage = 0.0
         self._last_reconcile = 0.0
+        self._last_digest_check = 0.0
         self._stop = False
 
     def tick(self, now: float | None = None) -> LoopStats:
@@ -113,6 +129,27 @@ class BotRunner:
                 log.error("reconciliation failed", exc_info=True,
                           extra={"action": "reconcile_failed"})
             self.stats.reconciles += 1
+
+        if (
+            self.store is not None
+            and self.config is not None
+            and now - self._last_digest_check >= self.intervals.digest_check_seconds
+        ):
+            self._last_digest_check = now
+            # send_unresolved_digest never raises, but this stage is isolated
+            # like the others so a future change cannot make observability
+            # able to break protection.
+            try:
+                if send_unresolved_digest(
+                    self.store,
+                    self.config.alert_telegram_bot_token,
+                    self.config.alert_telegram_chat_id,
+                ):
+                    self.stats.digests_sent += 1
+            except Exception:
+                self.stats.errors += 1
+                log.error("unresolved digest failed", exc_info=True,
+                          extra={"action": "digest_failed"})
 
         return self.stats
 

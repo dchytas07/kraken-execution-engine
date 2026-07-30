@@ -306,9 +306,45 @@ managed and closes still work.
    unit-tested. Note that a send is only reported successful if Telegram's
    response body carries `ok: true`; HTTP 200 alone is not treated as
    delivery, for the same reason a submitted order is never treated as a
-   filled one (brief 27). Everything else about observability here still
-   holds: no dashboard, logs/DB/test_inject remain the surface for anything
-   short of these two states.
+   filled one (brief 27).
+
+   **Daily digest (added 2026-07-30).** The per-transition alert fires once,
+   at the moment a trade enters either state, and then nothing reminds anyone
+   it is still sitting there. `send_unresolved_digest` closes that: at most
+   once every 24 hours it sends one summary listing every unresolved trade
+   with its id, symbol, state, how long it has been stuck, and the original
+   reason:
+
+   ```
+   2 trade(s) awaiting review:
+
+   • trade 1 (PF_XBTUSD) — REQUIRES_REVIEW
+     stuck ~3d 5h | unresolvable order intent after restart
+
+   • trade 2 (PF_ETHUSD) — SAFE_ERROR
+     stuck ~3d 5h | UNPROTECTED: stop resize failed, position exceeds stop size
+   ```
+
+   It reuses `send_alert` — no second transport — and is driven by
+   `BotRunner.tick` on a 300s *check* cadence, while the real 24h interval is
+   enforced by a persisted `ALERT_DIGEST` event row rather than an in-process
+   timer, because `time.monotonic()` resets on restart and a daily-restarted
+   bot would otherwise never reach 24h. **Silent when nothing is
+   unresolved** — a channel that pings daily to say "all fine" trains you to
+   ignore it. A *failed* send deliberately does not consume the window, so
+   one transient blip cannot cost a day of visibility.
+
+   Reporting the age accurately required a real fix: `TRADE_STATE_CHANGED`
+   existed in the event vocabulary but was never written by anything, and
+   `trades.updated_at` is bumped by `update_trade_actuals` too, so it means
+   "last touched", not "state last changed" — a long-quarantined trade would
+   have reported as freshly changed. `transition_trade` now writes that event
+   inside the same transaction as the state change, so the audit trail cannot
+   disagree with the state it describes.
+
+   Everything else about observability here still holds: no dashboard,
+   logs/DB/test_inject remain the surface for anything short of these two
+   states.
 
 ### Known behaviours worth knowing
 

@@ -90,6 +90,9 @@ SAFETY_FUNCTIONS = {
     "protection_sweep": "PROTECTION_SLA — O(1) protection, cannot be starved",
     "tick": "the production loop iteration; protection runs first",
     "send_alert": "real-time Telegram alert on REQUIRES_REVIEW/SAFE_ERROR",
+    "send_unresolved_digest": "daily reminder of trades still awaiting review",
+    "trades_in_states": "called by send_unresolved_digest, the digest query",
+    "last_event_at": "called by send_unresolved_digest, the 24h cadence marker",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -437,6 +440,11 @@ CRITICAL_MODULES = (
     "recovery.py",
     "admission.py",
     "pipeline.py",
+    # Added when the digest landed: this is now the module responsible for
+    # telling a human something is wrong, so an unwired function here is the
+    # same class of bug as an unwired guard — it fails silently and nobody
+    # finds out until they needed the alert.
+    "alerting.py",
 )
 
 # Functions in CRITICAL_MODULES deliberately not tracked as safety mechanisms.
@@ -477,6 +485,7 @@ EXCUSED_IN_CRITICAL_MODULES = {
     "start": "stream lifecycle",
     "_on_fill": "stream callback; wakes the loop only",
     "_log_report": "logging only",
+    "_format_age": "called by send_unresolved_digest, string formatting only",
     "_log_intent": "logging only",
     "_order_verb": "command-shape helper",
     "_next_stop_sequence": "id sequencing; covered by place_stop tests",

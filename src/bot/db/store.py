@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -318,6 +318,52 @@ class Store:
             ).fetchall()
         )
 
+    def trades_in_states(self, states: Iterable[TradeState]) -> list[sqlite3.Row]:
+        """Trades currently in any of `states`, with a `state_since` column.
+
+        `state_since` is the timestamp of the most recent TRADE_STATE_CHANGED
+        event, i.e. when the trade entered the state it is in now. It is NOT
+        `updated_at`, which update_trade_actuals also bumps and would make a
+        long-quarantined trade look freshly changed.
+
+        Falls back to `updated_at` for rows that predate transition auditing,
+        so callers get an approximate age rather than nothing. Those callers
+        cannot tell the difference, so anything user-facing should describe
+        the age as approximate.
+        """
+        values = [s.value for s in states]
+        if not values:
+            return []
+        placeholders = ",".join("?" * len(values))
+        return list(
+            self._conn.execute(
+                f"""SELECT t.*,
+                           COALESCE(
+                               (SELECT MAX(e.occurred_at) FROM events e
+                                 WHERE e.trade_id = t.id
+                                   AND e.event_type = 'TRADE_STATE_CHANGED'),
+                               t.updated_at
+                           ) AS state_since
+                      FROM trades t
+                     WHERE t.state IN ({placeholders})
+                     ORDER BY t.id""",
+                values,
+            ).fetchall()
+        )
+
+    def last_event_at(self, event_type: EventType) -> str | None:
+        """When an event of this type last occurred, or None if never.
+
+        Used for cadences that must survive a restart — `time.monotonic()`
+        resets to zero on every process, so a bot restarted more often than
+        its own interval would never fire.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(occurred_at) AS at FROM events WHERE event_type = ?",
+            (event_type.value,),
+        ).fetchone()
+        return row["at"] if row else None
+
     def transition_trade(
         self, trade_id: int, target: TradeState, detail: str | None = None
     ) -> None:
@@ -334,11 +380,34 @@ class Store:
                 raise KeyError(f"no trade with id {trade_id}")
             current = TradeState(row["state"])
             assert_transition(current, target)
+            at = _now()
             conn.execute(
                 """UPDATE trades SET state = ?, state_detail = ?, updated_at = ?,
                           closed_at = CASE WHEN ? = 'CLOSED' THEN ? ELSE closed_at END
                    WHERE id = ?""",
-                (target.value, detail, _now(), target.value, _now(), trade_id),
+                (target.value, detail, at, target.value, at, trade_id),
+            )
+            # Audit the transition in the same transaction, so the trail can
+            # never disagree with the state it describes. This is also the
+            # ONLY reliable record of when a trade entered its current state:
+            # `updated_at` is bumped by update_trade_actuals too, so it means
+            # "last touched", not "state last changed". Inlined rather than
+            # calling append_event because transaction() uses BEGIN IMMEDIATE
+            # and is not reentrant.
+            conn.execute(
+                """INSERT INTO events
+                   (occurred_at, event_type, trade_id, severity, summary, detail_json)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    at,
+                    EventType.TRADE_STATE_CHANGED.value,
+                    trade_id,
+                    "INFO",
+                    f"{current.value} -> {target.value}",
+                    json.dumps(
+                        {"from": current.value, "to": target.value, "detail": detail}
+                    ),
+                ),
             )
 
     def update_trade_actuals(

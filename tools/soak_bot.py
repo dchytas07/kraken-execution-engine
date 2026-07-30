@@ -89,6 +89,12 @@ def main() -> int:
             manage_seconds=MANAGE_INTERVAL,
             reconcile_seconds=RECONCILE_INTERVAL,
         ),
+        # store/config deliberately omitted, which disables the unresolved
+        # digest. The soak intentionally drives trades into SAFE_ERROR to
+        # prove the safety paths fire, so wiring real alert credentials here
+        # would push a live Telegram message on every run. Not an oversight:
+        # the digest is exercised by tests/test_alerting.py and
+        # tests/test_runner.py instead.
     )
     log.info("soak bot ready", extra={"action": "soak_ready"})
     while True:

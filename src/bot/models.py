@@ -368,6 +368,9 @@ class EventType(StrEnum):
     SAFETY_CHECK_FAILED = "SAFETY_CHECK_FAILED"
     STARTUP = "STARTUP"
     SHUTDOWN = "SHUTDOWN"
+    # Recorded on every digest evaluation, sent or skipped. Doubles as the
+    # persisted 24h cadence marker, so the digest survives restarts.
+    ALERT_DIGEST = "ALERT_DIGEST"
 
 
 @dataclass(frozen=True, slots=True)

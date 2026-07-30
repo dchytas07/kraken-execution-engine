@@ -79,3 +79,62 @@ def test_default_intervals_meet_the_sla_with_retries():
     i = LoopIntervals()
     assert i.sweep_seconds * 3 <= PROTECTION_SLA_SECONDS
     assert i.manage_seconds < i.reconcile_seconds
+
+
+# ==========================================================================
+# Daily digest — driven by the loop, not just callable
+# ==========================================================================
+
+
+class FakeConfig:
+    alert_telegram_bot_token = "TOKEN"
+    alert_telegram_chat_id = "CHAT"
+
+
+def test_digest_is_not_attempted_without_store_and_config(monkeypatch):
+    """Omitting either disables the digest — existing callers are unaffected."""
+    calls = []
+    monkeypatch.setattr("bot.runner.send_unresolved_digest",
+                        lambda *a, **kw: calls.append(a) or True)
+    r = runner()
+    r.tick(now=0)
+    r.tick(now=10_000)
+    assert calls == []
+
+
+def test_loop_drives_the_digest_on_its_own_cadence(monkeypatch):
+    calls = []
+    monkeypatch.setattr("bot.runner.send_unresolved_digest",
+                        lambda *a, **kw: calls.append(a) or True)
+    r = BotRunner(manager=FakeManager(), reconciler=FakeReconciler(),
+                  intervals=LoopIntervals(), store=object(), config=FakeConfig())
+
+    # Same shape as the manage/reconcile cadences: the first check lands one
+    # interval in, not on tick zero.
+    r.tick(now=0)
+    assert calls == []
+    r.tick(now=310)               # past digest_check_seconds: checks
+    r.tick(now=320)               # inside the interval again: no second call
+    assert len(calls) == 1
+    r.tick(now=700)               # past it once more
+
+    assert len(calls) == 2
+    assert calls[0][1:] == ("TOKEN", "CHAT")
+    assert r.stats.digests_sent == 2
+
+
+def test_a_failing_digest_does_not_stop_protection(monkeypatch):
+    """Observability must never be able to break the safety path."""
+    def explode(*a, **kw):
+        raise RuntimeError("digest blew up")
+    monkeypatch.setattr("bot.runner.send_unresolved_digest", explode)
+    r = BotRunner(manager=FakeManager(), reconciler=FakeReconciler(),
+                  intervals=LoopIntervals(), store=object(), config=FakeConfig())
+
+    r.tick(now=0)
+    r.tick(now=1000)              # digest checked here, and explodes
+    r.tick(now=2000)              # must still sweep, and check again
+
+    assert r.manager.sweeps == 3, "protection kept running"
+    assert r.stats.errors == 2, "both digest failures counted, neither fatal"
+    assert r.stats.digests_sent == 0
