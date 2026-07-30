@@ -14,9 +14,12 @@ from unittest.mock import MagicMock, patch
 from bot.alerting import send_alert
 
 
-def _fake_response(status):
+def _fake_response(status, body=None):
     resp = MagicMock()
     resp.status = status
+    resp.read = MagicMock(
+        return_value=json.dumps({"ok": True} if body is None else body).encode()
+    )
     resp.__enter__ = MagicMock(return_value=resp)
     resp.__exit__ = MagicMock(return_value=False)
     return resp
@@ -44,6 +47,29 @@ def test_non_200_response_returns_false_and_logs(caplog):
         with caplog.at_level(logging.WARNING):
             assert send_alert("TOKEN", "12345", "hello") is False
     assert any("alert send failed" in r.message for r in caplog.records)
+
+
+def test_http_200_with_ok_false_is_not_treated_as_sent(caplog):
+    """HTTP 200 != Telegram sent it. Returning True on the status code alone
+    would be the same submitted-equals-confirmed mistake brief 27 forbids on
+    the order path."""
+    body = {"ok": False, "description": "Forbidden: bot was blocked by the user"}
+    with patch("bot.alerting.urllib.request.urlopen",
+               return_value=_fake_response(200, body)):
+        with caplog.at_level(logging.WARNING):
+            assert send_alert("TOKEN", "12345", "hello") is False
+    assert any("bot was blocked by the user" in r.message for r in caplog.records)
+
+
+def test_unparseable_body_is_not_treated_as_sent(caplog):
+    resp = MagicMock()
+    resp.status = 200
+    resp.read = MagicMock(return_value=b"<html>not json</html>")
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    with patch("bot.alerting.urllib.request.urlopen", return_value=resp):
+        with caplog.at_level(logging.WARNING):
+            assert send_alert("TOKEN", "12345", "hello") is False
 
 
 def test_network_error_does_not_propagate(caplog):

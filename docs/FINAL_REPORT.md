@@ -299,9 +299,16 @@ managed and closes still work.
    logged and swallowed, never allowed to block or crash the transition it's
    reporting on (covered by dedicated failure-injection tests). Run
    `python -m bot.main --test-alert` to confirm the credentials work
-   standalone, without running startup or touching the exchange. Everything
-   else about observability here still holds: no dashboard, logs/DB/
-   test_inject remain the surface for anything short of these two states.
+   standalone, without running startup or touching the exchange.
+   **Verified end-to-end 2026-07-30:** a real alert was sent via
+   `--test-alert` and confirmed received by the operator on Telegram from
+   `@example_bot` — so this path is live-tested, not just
+   unit-tested. Note that a send is only reported successful if Telegram's
+   response body carries `ok: true`; HTTP 200 alone is not treated as
+   delivery, for the same reason a submitted order is never treated as a
+   filled one (brief 27). Everything else about observability here still
+   holds: no dashboard, logs/DB/test_inject remain the surface for anything
+   short of these two states.
 
 ### Known behaviours worth knowing
 

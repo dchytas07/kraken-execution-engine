@@ -55,6 +55,20 @@ def send_alert(bot_token: str | None, chat_id: str | None, text: str) -> bool:
                     extra={"action": "alert_failed"},
                 )
                 return False
+            raw = resp.read()
+
+        # HTTP 200 is not the same as "Telegram sent it". The API reports
+        # per-request success in an `ok` field, so returning True on the
+        # status code alone would be the same submitted-equals-confirmed
+        # mistake brief 27 forbids on the order path. Parse and check.
+        payload = json.loads(raw)
+        if not payload.get("ok"):
+            log.warning(
+                f"alert send failed: Telegram returned ok=false "
+                f"({payload.get('description') or payload})",
+                extra={"action": "alert_failed"},
+            )
+            return False
         return True
     except Exception as exc:  # noqa: BLE001 — alerting must never crash the bot
         log.warning(f"alert send failed: {exc}", extra={"action": "alert_failed"})
