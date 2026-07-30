@@ -166,6 +166,61 @@ empirically:
 
 Until Tests A–D are run, treat §1 as reasoned from documentation only.
 
+**Status update, 2026-07-30:** Tests A/B/C remain unrun — they each require a
+Spot API key deliberately provisioned with a specific permission combination,
+and no Spot credentials are configured on this machine (`KRAKEN_API_KEY` /
+`KRAKEN_API_SECRET` are both empty). Test D is blocked for a different reason:
+see §1.7 — the one Futures key that is configured does not authenticate at
+all, so `kraken futures accounts` cannot be confirmed working yet either.
+
+---
+
+### 1.7 Live credential attempt, 2026-07-30 — futures key does not authenticate
+
+Live `KRAKEN_FUTURES_API_KEY` / `KRAKEN_FUTURES_API_SECRET` were added to
+`.env`. Attempted, all read-only:
+
+| Call | Result |
+|---|---|
+| `kraken futures ticker PF_XBTUSD` (public, unauthenticated) | ✅ 200, real market data |
+| `kraken futures accounts` (authenticated) | ❌ HTTP 200, body `{"result":"error","error":"authenticationError"}` |
+| Same call via the bot's own `run_permission_checks` / `--check` path | ❌ identical — `futures_connectivity: FAIL`, `Authentication failed: authenticationError` |
+
+Diagnosis, to rule out the usual local causes before concluding it's the
+credential itself:
+
+- **Not a network/CLI problem.** The public ticker call round-trips to the
+  real production endpoint (`futures.kraken.com`) and returns live data
+  through the same binary and network path.
+- **Not a clock/nonce problem.** Local UTC clock matched the server's
+  `serverTime` in the ticker response to the second.
+- **Not a credential-shape problem.** Key is 56 chars, secret is 88 chars
+  (base64) — both look like well-formed Futures credentials, no stray
+  whitespace or quoting in `.env`.
+- **Not a bot-side bug.** The failure is identical whether calling
+  `kraken` directly with the env sourced, or through
+  `KrakenCli`/`run_permission_checks` exactly as production does
+  (`env=dict(os.environ)` in `main.py`, unmodified).
+- **Not a demo/production endpoint mixup** — `kraken-cli` refuses to point at
+  a non-Kraken host at all (`--futures-url` is host-allowlisted), so a demo
+  key pointed at prod would still show as a clean `authenticationError` from
+  prod, indistinguishable from this result. Worth checking on the Kraken side
+  (see below) but not distinguishable from here.
+
+**This narrows it to the credential/account side, not this codebase or this
+verification pass.** Likely causes, in rough order of likelihood: the key was
+mistyped or truncated when copied into `.env`; the key was created in Kraken's
+Futures **demo** environment rather than production; the key has an IP
+allowlist that excludes this machine; or the key was disabled/revoked after
+creation.
+
+**Consequence:** Test D and every check in §5 gated on a working authenticated
+futures call (§4.2 `stopPrice`, §1C Study B live re-confirmation, §6.3 the
+WebSocket fill stream) remain blocked — not on "no credentials" as before, but
+specifically on "the configured credential is rejected by Kraken." Re-run
+after regenerating/re-verifying the key in the Kraken Futures UI; nothing in
+this codebase needs to change.
+
 ---
 
 ## 1B. Study A — XAUT vs spot-gold tracking error
@@ -348,7 +403,7 @@ Consequences, all of which shape the sizing engine:
 3. **No minimum order size was observable in paper** — because paper enforces
    nothing. Resolved from documentation instead; see §4.1.1.
 
-### 4.1.1 Minimum order size — RESOLVED (doc-verified)
+### 4.1.1 Minimum order size — RESOLVED (doc-verified, spot-checked live)
 
 The `instruments` endpoint carries **no** minimum-size field. Verified
 exhaustively: all **294** instruments, **82** distinct key paths, zero matches
@@ -381,10 +436,21 @@ $20,000,000, far above anything a $30-margin bot can produce.
 Source:
 <https://support.kraken.com/articles/4844359082772-linear-multi-collateral-derivatives-contract-specifications>
 
-Caveat: doc-verified, not API-verified, and the identity min == increment
-should be spot-checked live. But it is no longer *blocked* on live credentials,
-and a wrong assumption here would now fail closed (we would reject an order
-Kraken might have accepted) rather than submitting an invalid one.
+**Spot-checked live, 2026-07-30.** `kraken futures instruments` is a public,
+unauthenticated endpoint, so this did not require a working credential. Pulled
+all 295 live instruments (one more than the 294 in the earlier doc-verified
+pass — an addition to Kraken's catalog, not a discrepancy) and repeated both
+checks against the live payload:
+
+- `contractValueTradePrecision` for `PF_XBTUSD` / `PF_ETHUSD` / `PF_SOLUSD` is
+  `4` / `3` / `2` live, giving derived increments `0.0001` / `0.001` / `0.01` —
+  **exact match** to the doc-derived values above.
+- Repeated the exhaustive key-name search (`min`, `notional`, `qty`,
+  `quantity`, `lot`, `amount`, `order`) against the live payload: **zero
+  matches**, same as the doc-verified pass.
+
+The identity min == increment is now API-verified against live, not just
+doc-verified. No longer caveated.
 
 Note: the "futures trade in whole contracts only" rule found in Kraken's
 support docs applies to **inverse and fixed-maturity** contracts (`PI_`, `FI_`),
@@ -398,7 +464,9 @@ stop orders, so a stop's trigger price cannot be read back in paper. One leg of
 the brief-16 verification (confirm the new stop has the correct trigger price)
 is therefore unverifiable in paper; size, existence, type and reduce-only are
 all verifiable. Live `open-orders` is expected to return `stopPrice` — **still
-unconfirmed, needs live credentials.**
+unconfirmed.** Live credentials now exist, but the configured Futures key
+fails authentication (§1.7), and `open-orders` is an authenticated endpoint, so
+this remains untestable until that credential issue is resolved.
 
 ### 4.3 Leverage flag asymmetry
 
@@ -418,14 +486,18 @@ guard on `KrakenCliAdapter`.
 
 | Item | Blocked on | Section |
 |---|---|---|
-| Withdrawal-permission tests A–D | operator creating test API keys | §1.6 |
-| Live `open-orders` returns `stopPrice` | live credentials | §4.2 |
-| Re-confirm Study B on live | live credentials | §1C |
-| Spot-check min size == increment live | live credentials (non-blocking) | §4.1.1 |
+| Withdrawal tests A–C (spot key scope combinations) | operator creating 3 differently-scoped spot test keys | §1.6 |
+| Withdrawal test D (futures key connectivity + attestation) | the configured futures key fails authentication | §1.7 |
+| Live `open-orders` returns `stopPrice` | the configured futures key fails authentication | §1.7, §4.2 |
+| Re-confirm Study B on live | the configured futures key fails authentication | §1.7, §1C |
+| WebSocket fill stream auth against real credentials | the configured futures key fails authentication | §1.7, §7.4 |
 
 Closed since first written:
 - ~~Real minimum order size / min notional~~ — resolved from contract
   specifications; equals one size increment, derivable from the API. §4.1.1
+- ~~Spot-check min size == increment live~~ — confirmed 2026-07-30 against the
+  live `instruments` endpoint (public, unauthenticated): derived increments
+  match exactly, no min-size field exists live either. §4.1.1
 - ~~Whether a key-permission introspection endpoint exists~~ — confirmed
   negative across all 151 commands. §1.4.1
 
