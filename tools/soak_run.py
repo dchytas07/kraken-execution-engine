@@ -264,6 +264,46 @@ def marks(ad):
 T0 = time.monotonic()
 
 
+def kill_stray_bots() -> int:
+    """Kill soak bots left behind by a previous crashed run.
+
+    Run 3 was invalidated by exactly this: run 2's orchestrator crashed before
+    its SIGTERM line, so run 2's bot outlived it, kept an open handle to the
+    deleted database, and went on managing run 2's positions in the shared
+    paper account throughout run 3. Every run must start from a clean process
+    table, not just a clean database.
+    """
+    out = subprocess.run(["pgrep", "-f", "soak_bot.py"], capture_output=True,
+                         text=True).stdout.split()
+    for pid in out:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+            print(f"  killed stray soak bot pid={pid}", flush=True)
+        except (ProcessLookupError, ValueError):
+            pass
+    if out:
+        time.sleep(2)
+    return len(out)
+
+
+def assert_clean_start(ad: KrakenCliAdapter) -> None:
+    """Refuse to start on dirty initial conditions.
+
+    A soak that begins with leftover positions measures the leftovers. The
+    reset was previously fired and never checked -- the same 'cannot verify ->
+    assume fine' pattern this build keeps removing from the bot.
+    """
+    positions = with_lock_retry(ad.get_open_positions)
+    orders = with_lock_retry(ad.get_open_orders)
+    if positions or orders:
+        raise SystemExit(
+            f"REFUSING TO START: paper account is not clean — "
+            f"{len(positions)} position(s) {[p.symbol for p in positions]}, "
+            f"{len(orders)} order(s). Reset failed or a stray process is live."
+        )
+    print("  clean start verified: 0 positions, 0 orders", flush=True)
+
+
 def main() -> int:
     global T0
     for p in (RUN,):
@@ -273,14 +313,25 @@ def main() -> int:
     RUN.mkdir(parents=True)
     INBOX.mkdir(); DONE.mkdir()
 
+    kill_stray_bots()
     if PAPER_LOCK.exists():
         PAPER_LOCK.unlink()
-    subprocess.run(["kraken", "futures", "paper", "reset", "--yes", "-o", "json"],
-                   capture_output=True)
-    subprocess.run(["kraken", "futures", "paper", "init", "--balance", "10000",
-                    "-o", "json"], capture_output=True)
+
+    reset = subprocess.run(
+        ["kraken", "futures", "paper", "reset", "--yes", "-o", "json"],
+        capture_output=True, text=True)
+    if reset.returncode != 0 or '"error"' in reset.stdout:
+        raise SystemExit(f"REFUSING TO START: paper reset failed: "
+                         f"{reset.stdout}{reset.stderr}")
+    init = subprocess.run(
+        ["kraken", "futures", "paper", "init", "--balance", "10000", "-o", "json"],
+        capture_output=True, text=True)
+    if init.returncode != 0 or '"error"' in init.stdout:
+        raise SystemExit(f"REFUSING TO START: paper init failed: "
+                         f"{init.stdout}{init.stderr}")
 
     ad = adapter()
+    assert_clean_start(ad)
     m = marks(ad)
     T0 = time.monotonic()
     log("start", f"soak begins; marks {[f'{k}={v:.2f}' for k, v in m.items()]}")
@@ -408,6 +459,16 @@ def main() -> int:
     at(1500, lambda: inject("Close all positions", "S16-close-all"), "S16b")
 
     # -- run -------------------------------------------------------------
+    import atexit
+
+    def reap():
+        proc = state.get("proc")
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGKILL)
+            proc.wait(timeout=10)
+        kill_stray_bots()
+    atexit.register(reap)
+
     store = Store(DB)
     pending = sorted(schedule, key=lambda x: x[0])
     last_check = 0.0

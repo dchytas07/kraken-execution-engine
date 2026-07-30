@@ -1,96 +1,207 @@
-[    0.0s] start: soak begins; marks ['PF_XBTUSD=63898.82', 'PF_ETHUSD=1905.67', 'PF_SOLUSD=73.50']
-[    0.0s] bot: started pid=29251
+[    0.0s] start: soak begins; marks ['PF_XBTUSD=63666.86', 'PF_ETHUSD=1896.48', 'PF_SOLUSD=73.23']
+[    0.0s] bot: started pid=34960
 [   21.0s] inject: S1-spot (message 1)
-[   35.5s] inject: S2-commentary (message 2)
-[   51.9s] inject: S3-xrp (message 3)
-[   66.3s] inject: S4-gold (message 4)
-[   80.3s] inject: S5-incomplete (message 5)
-[   95.3s] inject: S6-ambiguous-close (message 6)
-[  111.8s] inject: S7-stale (message 7)
-[  141.1s] inject: S12-btc-50x (message 8)
-[  181.9s] inject: S13-eth (message 9)
-[  231.0s] inject: S10-occupied (message 10)
-[  302.3s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
-[  421.4s] error: scenario S18 raised: 'KrakenCliAdapter' object has no attribute 'client'
-[  720.6s] kill: SIGKILLed bot; 10 orders resting
-[  731.6s] bot: started pid=33267
-[  731.6s] restart: bot restarted; recovery will run
-[  787.7s] error: scenario S21-S23 raised: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  796.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  816.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  838.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  860.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  882.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  904.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  917.6s] inject-divergence: opened a manual 1.0 SOL position (S19)
-[  925.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  945.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  964.2s] inject: S11-orphan-symbol (message 11)
-[  970.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[  988.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1010.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1032.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1052.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1072.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
+[   28.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[   28.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[   36.9s] inject: S2-commentary (message 2)
+[   53.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[   53.5s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[   55.6s] inject: S3-xrp (message 3)
+[   68.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[   68.5s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[   75.0s] inject: S4-gold (message 4)
+[   81.0s] inject: S5-incomplete (message 5)
+[   93.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[   93.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[   99.1s] inject: S6-ambiguous-close (message 6)
+[  113.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  113.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  115.1s] inject: S7-stale (message 7)
+[  129.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  129.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  144.1s] inject: S12-btc-50x (message 8)
+[  151.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  151.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  203.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  203.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  238.2s] inject: S13-eth (message 9)
+[  241.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  241.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  243.2s] inject: S10-occupied (message 10)
+[  249.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  249.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  267.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  267.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  351.5s] lock: cleared orphaned paper lock (persistent contention)
+[  356.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  356.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  361.1s] inject-divergence: cancelled stop FP-00014 on PF_ETHUSD (S17)
+[  364.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  364.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  385.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  385.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  404.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  404.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  422.9s] inject-divergence: set PF_SOLUSD leverage to 3x (S18)
+[  425.6s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  425.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  425.6s] !! VIOLATION I5: PF_SOLUSD leverage 3.0 != 10
+[  446.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  446.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  446.4s] !! VIOLATION I5: PF_SOLUSD leverage 3.0 != 10
+[  467.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  467.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  468.9s] !! VIOLATION I5: PF_SOLUSD leverage 3.0 != 10
+[  488.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  488.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  516.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  516.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  535.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  535.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  559.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  559.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  576.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  576.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  595.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  595.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  616.6s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  616.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  642.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  642.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  660.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  660.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  684.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  684.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  704.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  704.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  721.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  721.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  726.9s] kill: SIGKILLed bot; 10 orders resting
+[  730.9s] lock: cleared orphaned paper lock (after SIGKILL)
+[  730.9s] bot: started pid=36626
+[  730.9s] restart: bot restarted; recovery will run
+[  741.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  741.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  768.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  768.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  782.6s] post-restart: order count unchanged at 10
+[  789.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  789.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  808.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  808.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  834.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  834.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  853.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  853.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  867.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  867.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  890.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  890.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  910.7s] inject-divergence: opened a manual 1.0 SOL position (S19)
+[  930.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  930.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  941.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  941.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  963.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  963.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[  970.3s] inject: S11-orphan-symbol (message 11)
+[  987.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[  987.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1004.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1004.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1016.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1016.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1036.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1036.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1054.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1054.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1074.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1074.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
 [ 1080.1s] inject: S15-partial (message 12)
-[ 1094.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1116.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1136.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1156.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1176.3s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1198.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1218.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1240.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1261.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1282.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1302.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1324.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1326.9s] inject: S16-close-eth (message 13)
-[ 1345.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1365.2s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1385.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1405.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1426.5s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1447.1s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1468.0s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1488.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1500.9s] inject: S16-close-all (message 14)
-[ 1509.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1530.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1550.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1572.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1594.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1616.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1636.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1656.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1678.7s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1700.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1720.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1740.9s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1760.8s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1783.6s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-[ 1804.4s] error: invariant check failed: [validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.
-Traceback (most recent call last):
-  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m90[0m, in [35m_run[0m
-    return [31mself.cli.run[0m[1;31m(*args)[0m.data
-           [31m~~~~~~~~~~~~[0m[1;31m^^^^^^^[0m
-  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/cli.py"[0m, line [35m167[0m, in [35mrun[0m
-    raise KrakenCliError(
-        category, str(data.get("message", raw)), argv
-    )
-[1;35mbot.exchange.cli.KrakenCliError[0m: [35m[validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.[0m
+[ 1096.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1096.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1114.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1114.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1135.6s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1135.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1156.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1156.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1179.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1179.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1200.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1200.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1250.7s] lock: cleared orphaned paper lock (persistent contention)
+[ 1257.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1257.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1262.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1262.5s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1317.0s] lock: cleared orphaned paper lock (persistent contention)
+[ 1322.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1322.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1324.9s] inject: S16-close-eth (message 13)
+[ 1331.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1331.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1350.6s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1350.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1370.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1370.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1392.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1392.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1402.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1402.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1411.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1411.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1425.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1425.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1433.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1433.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1454.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1454.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1480.2s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1480.2s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1498.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1498.5s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1503.0s] inject: S16-close-all (message 14)
+[ 1507.0s] !! VIOLATION PROCESS: bot exited unexpectedly:  File [35m"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py"[0m, line [35m1076[0m, in [35mrename[0m
+    [31mos.rename[0m[1;31m(self, target)[0m
+    [31m~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^^[0m
+[1;35mFileNotFoundError[0m: [35m[Errno 2] No such file or directory: '/home/user/projects/kraken-signal-bot/soak/inbox/14-S16-close-all.txt' -> '/home/user/projects/kraken-signal-bot/soak/done/14-S16-close-all.txt'[0m
 
-The above exception was the direct cause of the following exception:
+[ 1507.0s] bot: started pid=38097
+[ 1552.0s] lock: cleared orphaned paper lock (persistent contention)
+[ 1557.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1557.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1565.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1565.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1586.5s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1586.5s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1605.8s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1605.8s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1627.1s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1627.1s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1647.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1647.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1670.3s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1670.3s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1690.7s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1690.7s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1710.9s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1710.9s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1730.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1730.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1749.4s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1749.4s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1773.0s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1773.0s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
+[ 1792.6s] !! VIOLATION I8: PF_XBTUSD holds 0.0046 with no local trade
+[ 1792.6s] !! VIOLATION I8: PF_ETHUSD holds 0.156 with no local trade
 
-Traceback (most recent call last):
-  File [35m"/home/user/projects/kraken-signal-bot/tools/soak_run.py"[0m, line [35m458[0m, in [35m<module>[0m
-    raise SystemExit([31mmain[0m[1;31m()[0m)
-                     [31m~~~~[0m[1;31m^^[0m
-  File [35m"/home/user/projects/kraken-signal-bot/tools/soak_run.py"[0m, line [35m398[0m, in [35mmain[0m
-    final_positions = {p.symbol: str(p.size) for p in [31madapter().get_open_positions[0m[1;31m()[0m}
-                                                      [31m~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m[1;31m^^[0m
-  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m142[0m, in [35mget_open_positions[0m
-    data = self._run(*self._futures("positions"))
-  File [35m"/home/user/projects/kraken-signal-bot/src/bot/exchange/kraken.py"[0m, line [35m92[0m, in [35m_run[0m
-    raise ExchangeError(str(exc), retryable=exc.retryable) from exc
-[1;35mbot.exchange.base.ExchangeError[0m: [35m[validation] Validation error: Futures paper state is locked by another process. Try again shortly. If a previous command crashed, remove '/home/user/Library/Application Support/kraken/paper/futures_state.json.lock'.[0m
+======================================================================
+VERDICT: FAIL
+checks verified      : 77/77
+violations           : 164
+unexplained repairs  : none
+decisions            : {'IGNORED': 2, 'REJECTED': 2, 'REQUIRES_REVIEW': 4}
+rejection reasons    : {'SPOT_SIGNAL': 1, 'NOT_EXECUTABLE_TYPE': 1, 'GOLD_PINNED_OFF': 1, 'MISSING_FIELDS': 1, 'UNRECOGNISED_POSITION': 1, 'AMBIGUOUS_CLOSE_TARGET': 3}
+final positions      : {'PF_XBTUSD': '0.0046', 'PF_ETHUSD': '0.156', 'PF_SOLUSD': '1.0'}
+report               : /home/user/projects/kraken-signal-bot/soak/report.json

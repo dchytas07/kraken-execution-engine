@@ -1,0 +1,1021 @@
+{
+  "generated_at": "2026-07-30T01:13:22.781480+00:00",
+  "duration_s": 1800.0,
+  "verdict": "FAIL",
+  "checks_attempted": 77,
+  "checks_verified": 77,
+  "violations": [
+    {
+      "t": 28.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 28.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 53.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 53.5,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 68.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 68.5,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 93.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 93.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 113.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 113.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 129.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 129.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 151.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 151.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 203.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 203.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 241.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 241.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 249.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 249.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 267.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 267.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 356.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 356.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 364.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 364.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 385.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 385.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 404.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 404.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 425.6,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 425.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 425.6,
+      "invariant": "I5",
+      "detail": "PF_SOLUSD leverage 3.0 != 10"
+    },
+    {
+      "t": 446.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 446.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 446.4,
+      "invariant": "I5",
+      "detail": "PF_SOLUSD leverage 3.0 != 10"
+    },
+    {
+      "t": 467.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 467.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 468.9,
+      "invariant": "I5",
+      "detail": "PF_SOLUSD leverage 3.0 != 10"
+    },
+    {
+      "t": 488.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 488.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 516.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 516.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 535.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 535.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 559.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 559.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 576.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 576.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 595.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 595.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 616.6,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 616.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 642.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 642.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 660.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 660.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 684.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 684.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 704.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 704.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 721.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 721.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 741.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 741.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 768.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 768.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 789.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 789.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 808.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 808.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 834.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 834.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 853.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 853.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 867.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 867.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 890.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 890.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 930.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 930.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 941.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 941.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 963.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 963.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 987.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 987.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1004.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1004.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1016.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1016.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1036.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1036.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1054.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1054.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1074.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1074.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1096.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1096.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1114.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1114.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1135.6,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1135.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1156.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1156.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1179.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1179.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1200.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1200.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1257.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1257.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1262.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1262.5,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1322.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1322.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1331.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1331.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1350.6,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1350.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1370.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1370.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1392.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1392.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1402.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1402.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1411.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1411.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1425.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1425.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1433.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1433.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1454.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1454.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1480.2,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1480.2,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1498.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1498.5,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1507.0,
+      "invariant": "PROCESS",
+      "detail": "bot exited unexpectedly:  File \u001b[35m\"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py\"\u001b[0m, line \u001b[35m1076\u001b[0m, in \u001b[35mrename\u001b[0m\n    \u001b[31mos.rename\u001b[0m\u001b[1;31m(self, target)\u001b[0m\n    \u001b[31m~~~~~~~~~\u001b[0m\u001b[1;31m^^^^^^^^^^^^^^\u001b[0m\n\u001b[1;35mFileNotFoundError\u001b[0m: \u001b[35m[Errno 2] No such file or directory: '/home/user/projects/kraken-signal-bot/soak/inbox/14-S16-close-all.txt' -> '/home/user/projects/kraken-signal-bot/soak/done/14-S16-close-all.txt'\u001b[0m\n"
+    },
+    {
+      "t": 1557.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1557.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1565.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1565.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1586.5,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1586.5,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1605.8,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1605.8,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1627.1,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1627.1,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1647.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1647.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1670.3,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1670.3,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1690.7,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1690.7,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1710.9,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1710.9,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1730.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1730.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1749.4,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1749.4,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1773.0,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1773.0,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    },
+    {
+      "t": 1792.6,
+      "invariant": "I8",
+      "detail": "PF_XBTUSD holds 0.0046 with no local trade"
+    },
+    {
+      "t": 1792.6,
+      "invariant": "I8",
+      "detail": "PF_ETHUSD holds 0.156 with no local trade"
+    }
+  ],
+  "expected_repairs": {
+    "UNPROTECTED_POSITION": 1,
+    "LEVERAGE_DRIFT": 1,
+    "ORPHAN_POSITION": 1
+  },
+  "observed_repairs": {
+    "orphan position PF_XBTUSD 0.0046": 5,
+    "orphan position PF_ETHUSD 0.156": 5,
+    "ORPHAN_POSITION": 45,
+    "orphan position PF_SOLUSD 1.0": 3
+  },
+  "unexplained_repairs": {},
+  "final_positions": {
+    "PF_XBTUSD": "0.0046",
+    "PF_ETHUSD": "0.156",
+    "PF_SOLUSD": "1.0"
+  },
+  "final_trades": [],
+  "message_decisions": {
+    "IGNORED": 2,
+    "REJECTED": 2,
+    "REQUIRES_REVIEW": 4
+  },
+  "rejection_reasons": {
+    "SPOT_SIGNAL": 1,
+    "NOT_EXECUTABLE_TYPE": 1,
+    "GOLD_PINNED_OFF": 1,
+    "MISSING_FIELDS": 1,
+    "UNRECOGNISED_POSITION": 1,
+    "AMBIGUOUS_CLOSE_TARGET": 3
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "kind": "start",
+      "detail": "soak begins; marks ['PF_XBTUSD=63666.86', 'PF_ETHUSD=1896.48', 'PF_SOLUSD=73.23']"
+    },
+    {
+      "t": 0.0,
+      "kind": "bot",
+      "detail": "started pid=34960"
+    },
+    {
+      "t": 21.0,
+      "kind": "inject",
+      "detail": "S1-spot (message 1)",
+      "message_id": 1
+    },
+    {
+      "t": 36.9,
+      "kind": "inject",
+      "detail": "S2-commentary (message 2)",
+      "message_id": 2
+    },
+    {
+      "t": 55.6,
+      "kind": "inject",
+      "detail": "S3-xrp (message 3)",
+      "message_id": 3
+    },
+    {
+      "t": 75.0,
+      "kind": "inject",
+      "detail": "S4-gold (message 4)",
+      "message_id": 4
+    },
+    {
+      "t": 81.0,
+      "kind": "inject",
+      "detail": "S5-incomplete (message 5)",
+      "message_id": 5
+    },
+    {
+      "t": 99.1,
+      "kind": "inject",
+      "detail": "S6-ambiguous-close (message 6)",
+      "message_id": 6
+    },
+    {
+      "t": 115.1,
+      "kind": "inject",
+      "detail": "S7-stale (message 7)",
+      "message_id": 7
+    },
+    {
+      "t": 144.1,
+      "kind": "inject",
+      "detail": "S12-btc-50x (message 8)",
+      "message_id": 8
+    },
+    {
+      "t": 238.2,
+      "kind": "inject",
+      "detail": "S13-eth (message 9)",
+      "message_id": 9
+    },
+    {
+      "t": 243.2,
+      "kind": "inject",
+      "detail": "S10-occupied (message 10)",
+      "message_id": 10
+    },
+    {
+      "t": 351.5,
+      "kind": "lock",
+      "detail": "cleared orphaned paper lock (persistent contention)"
+    },
+    {
+      "t": 361.1,
+      "kind": "inject-divergence",
+      "detail": "cancelled stop FP-00014 on PF_ETHUSD (S17)"
+    },
+    {
+      "t": 422.9,
+      "kind": "inject-divergence",
+      "detail": "set PF_SOLUSD leverage to 3x (S18)"
+    },
+    {
+      "t": 726.9,
+      "kind": "kill",
+      "detail": "SIGKILLed bot; 10 orders resting"
+    },
+    {
+      "t": 730.9,
+      "kind": "lock",
+      "detail": "cleared orphaned paper lock (after SIGKILL)"
+    },
+    {
+      "t": 730.9,
+      "kind": "bot",
+      "detail": "started pid=36626"
+    },
+    {
+      "t": 730.9,
+      "kind": "restart",
+      "detail": "bot restarted; recovery will run"
+    },
+    {
+      "t": 782.6,
+      "kind": "post-restart",
+      "detail": "order count unchanged at 10"
+    },
+    {
+      "t": 910.7,
+      "kind": "inject-divergence",
+      "detail": "opened a manual 1.0 SOL position (S19)"
+    },
+    {
+      "t": 970.3,
+      "kind": "inject",
+      "detail": "S11-orphan-symbol (message 11)",
+      "message_id": 11
+    },
+    {
+      "t": 1080.1,
+      "kind": "inject",
+      "detail": "S15-partial (message 12)",
+      "message_id": 12
+    },
+    {
+      "t": 1250.7,
+      "kind": "lock",
+      "detail": "cleared orphaned paper lock (persistent contention)"
+    },
+    {
+      "t": 1317.0,
+      "kind": "lock",
+      "detail": "cleared orphaned paper lock (persistent contention)"
+    },
+    {
+      "t": 1324.9,
+      "kind": "inject",
+      "detail": "S16-close-eth (message 13)",
+      "message_id": 13
+    },
+    {
+      "t": 1503.0,
+      "kind": "inject",
+      "detail": "S16-close-all (message 14)",
+      "message_id": 14
+    },
+    {
+      "t": 1507.0,
+      "kind": "bot",
+      "detail": "started pid=38097"
+    },
+    {
+      "t": 1552.0,
+      "kind": "lock",
+      "detail": "cleared orphaned paper lock (persistent contention)"
+    }
+  ]
+}
