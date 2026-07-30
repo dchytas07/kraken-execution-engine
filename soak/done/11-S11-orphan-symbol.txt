@@ -1,0 +1,8 @@
+SOL LONG
+Entry: 74.07 - 74.0
+TP1: 75.4
+TP2: 76.88
+TP3: 78.36
+TP4: 79.84
+SL: 70.23
+Leverage: 10x

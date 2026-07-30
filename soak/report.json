@@ -1,0 +1,201 @@
+{
+  "generated_at": "2026-07-30T02:31:30.975139+00:00",
+  "duration_s": 1800.0,
+  "verdict": "PASS",
+  "protection_latencies": [],
+  "protection_sla_seconds": 15,
+  "checks_attempted": 85,
+  "checks_verified": 85,
+  "violations": [],
+  "expected_repairs": {
+    "UNPROTECTED_POSITION": 1,
+    "ORDER_MISSING_ON_EXCHANGE": 1,
+    "LEVERAGE_DRIFT": 1,
+    "ORPHAN_POSITION": 1
+  },
+  "observed_repairs": {
+    "ORDER_MISSING_ON_EXCHANGE": 1,
+    "orphan position PF_SOLUSD 1.0": 4,
+    "ORPHAN_POSITION": 15,
+    "LEVERAGE_DRIFT": 1
+  },
+  "unexplained_repairs": {},
+  "final_positions": {
+    "PF_SOLUSD": "1.0"
+  },
+  "final_trades": [
+    {
+      "id": 1,
+      "symbol": "PF_XBTUSD",
+      "state": "CANCELLED"
+    },
+    {
+      "id": 2,
+      "symbol": "PF_XBTUSD",
+      "state": "CLOSED"
+    },
+    {
+      "id": 3,
+      "symbol": "PF_ETHUSD",
+      "state": "CLOSED"
+    }
+  ],
+  "message_decisions": {
+    "EXECUTED": 4,
+    "IGNORED": 2,
+    "REJECTED": 4,
+    "REQUIRES_REVIEW": 4
+  },
+  "rejection_reasons": {
+    "SPOT_SIGNAL": 1,
+    "NOT_EXECUTABLE_TYPE": 2,
+    "UNSUPPORTED_ASSET": 1,
+    "GOLD_PINNED_OFF": 1,
+    "MISSING_FIELDS": 1,
+    "STALE_ENTRY": 1,
+    "SYMBOL_ALREADY_ACTIVE": 1,
+    "UNRECOGNISED_POSITION": 1,
+    "AMBIGUOUS_CLOSE_TARGET": 1
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "kind": "start",
+      "detail": "soak begins; marks ['PF_XBTUSD=64250.12', 'PF_ETHUSD=1915.91', 'PF_SOLUSD=74.01']"
+    },
+    {
+      "t": 0.0,
+      "kind": "bot",
+      "detail": "started pid=45214"
+    },
+    {
+      "t": 21.0,
+      "kind": "inject",
+      "detail": "S1-spot (message 1)",
+      "message_id": 1
+    },
+    {
+      "t": 35.5,
+      "kind": "inject",
+      "detail": "S2-commentary (message 2)",
+      "message_id": 2
+    },
+    {
+      "t": 51.9,
+      "kind": "inject",
+      "detail": "S3-xrp (message 3)",
+      "message_id": 3
+    },
+    {
+      "t": 66.3,
+      "kind": "inject",
+      "detail": "S4-gold (message 4)",
+      "message_id": 4
+    },
+    {
+      "t": 80.3,
+      "kind": "inject",
+      "detail": "S5-incomplete (message 5)",
+      "message_id": 5
+    },
+    {
+      "t": 96.8,
+      "kind": "inject",
+      "detail": "S6-ambiguous-close (message 6)",
+      "message_id": 6
+    },
+    {
+      "t": 111.2,
+      "kind": "inject",
+      "detail": "S7-stale (message 7)",
+      "message_id": 7
+    },
+    {
+      "t": 142.5,
+      "kind": "inject",
+      "detail": "S12-btc-50x (message 8)",
+      "message_id": 8
+    },
+    {
+      "t": 181.4,
+      "kind": "inject",
+      "detail": "S13-eth (message 9)",
+      "message_id": 9
+    },
+    {
+      "t": 232.6,
+      "kind": "inject",
+      "detail": "S10-occupied (message 10)",
+      "message_id": 10
+    },
+    {
+      "t": 301.9,
+      "kind": "grace",
+      "detail": "I1 on PF_XBTUSD excused for 75s (S17 cancels the stop on purpose)"
+    },
+    {
+      "t": 301.9,
+      "kind": "inject-divergence",
+      "detail": "cancelled stop FP-00005 on PF_XBTUSD (S17)"
+    },
+    {
+      "t": 421.8,
+      "kind": "grace",
+      "detail": "I5 on PF_SOLUSD excused for 75s (S18 sets leverage to 3x on purpose)"
+    },
+    {
+      "t": 421.8,
+      "kind": "inject-divergence",
+      "detail": "set PF_SOLUSD leverage to 3x (S18)"
+    },
+    {
+      "t": 720.7,
+      "kind": "kill",
+      "detail": "SIGKILLed bot; 10 orders resting"
+    },
+    {
+      "t": 730.7,
+      "kind": "bot",
+      "detail": "started pid=50016"
+    },
+    {
+      "t": 730.7,
+      "kind": "restart",
+      "detail": "bot restarted; recovery will run"
+    },
+    {
+      "t": 782.1,
+      "kind": "post-restart",
+      "detail": "order count unchanged at 10"
+    },
+    {
+      "t": 901.8,
+      "kind": "inject-divergence",
+      "detail": "opened a manual 1.0 SOL position (S19)"
+    },
+    {
+      "t": 960.9,
+      "kind": "inject",
+      "detail": "S11-orphan-symbol (message 11)",
+      "message_id": 11
+    },
+    {
+      "t": 1081.8,
+      "kind": "inject",
+      "detail": "S15-partial (message 12)",
+      "message_id": 12
+    },
+    {
+      "t": 1320.2,
+      "kind": "inject",
+      "detail": "S16-close-eth (message 13)",
+      "message_id": 13
+    },
+    {
+      "t": 1501.4,
+      "kind": "inject",
+      "detail": "S16-close-all (message 14)",
+      "message_id": 14
+    }
+  ]
+}

@@ -247,35 +247,45 @@ def check_invariants(ad: KrakenCliAdapter, store: Store, *, allow_orphan: set[st
                                    f"holds {positions[row['symbol']].size}")
 
 
-def measure_protection_latency() -> list[tuple[str, float]]:
-    """Actual fill -> protected latency, per position, from the bot log.
+def measure_protection_latency(store: Store) -> list[tuple[str, float]]:
+    """Actual fill -> protected latency, per trade, from the DATABASE.
 
-    Gives the SLA a measured number instead of a binary "was there a stop at
-    the moment I happened to look".
+    Read from the DB, not the log. The first version parsed bot.jsonl looking
+    for a fill line, but POSITION_UPDATED is written as a DB event and never
+    logged, so it matched nothing and the SLA check silently took zero samples
+    — a green run that had not verified the one thing it was re-run to verify.
+    The DB carries both timestamps authoritatively and does not depend on log
+    wording.
     """
+    rows = store._conn.execute(
+        """
+        SELECT t.id, t.symbol,
+               (SELECT MIN(e.occurred_at) FROM events e
+                 WHERE e.trade_id = t.id AND e.event_type = 'POSITION_UPDATED')
+                 AS first_position,
+               (SELECT MIN(o.submitted_at) FROM orders o
+                 WHERE o.trade_id = t.id AND o.purpose = 'SL'
+                   AND o.submitted_at IS NOT NULL) AS stop_submitted
+        FROM trades t ORDER BY t.id
+        """
+    ).fetchall()
+
     import datetime as _dt
-    fills: dict[str, _dt.datetime] = {}
     out: list[tuple[str, float]] = []
-    if not BOT_LOG.exists():
-        return out
-    for line in BOT_LOG.read_text().splitlines():
-        try:
-            d = json.loads(line)
-        except Exception:
+    for r in rows:
+        if not r["first_position"] or not r["stop_submitted"]:
             continue
-        ts = d.get("ts")
-        symbol = d.get("symbol") or ""
-        if not ts:
-            continue
-        when = _dt.datetime.fromisoformat(ts)
-        msg = d.get("msg", "")
-        if d.get("action") == "position_updated" or "position " in msg:
-            fills.setdefault(symbol, when)
-        if d.get("action") in ("protected", "sweep_protected") and symbol:
-            first = fills.pop(symbol, None)
-            if first is not None:
-                out.append((symbol, (when - first).total_seconds()))
+        first = _dt.datetime.fromisoformat(r["first_position"])
+        stop = _dt.datetime.fromisoformat(r["stop_submitted"])
+        out.append((r["symbol"], (stop - first).total_seconds()))
     return out
+
+
+def trades_that_held_a_position(store: Store) -> int:
+    return store._conn.execute(
+        "SELECT COUNT(DISTINCT trade_id) n FROM events "
+        "WHERE event_type = 'POSITION_UPDATED'"
+    ).fetchone()["n"]
 
 
 def collect_repairs(store: Store):
@@ -602,7 +612,15 @@ def main() -> int:
     }
 
     state["proc"].send_signal(signal.SIGTERM)
-    protection_latencies.extend(measure_protection_latency())
+    protection_latencies.extend(measure_protection_latency(store))
+    # An unmeasured SLA is not a met SLA. Run 5 passed with zero samples
+    # because the measurement read the wrong source; the criterion must fail
+    # when it cannot evaluate, exactly like the coverage guard.
+    held = trades_that_held_a_position(store)
+    if held and not protection_latencies:
+        violate("PROTECTION_SLA",
+                f"{held} trade(s) held a position but no fill->protect latency "
+                "could be measured; the SLA was not verified")
     from bot.execution.manager import PROTECTION_SLA_SECONDS
     breaches = [(s_, l) for s_, l in protection_latencies
                 if l > PROTECTION_SLA_SECONDS]

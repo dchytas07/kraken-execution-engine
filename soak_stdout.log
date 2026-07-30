@@ -3,3 +3,34 @@
 [    0.0s] bot: started pid=45214
 [   21.0s] inject: S1-spot (message 1)
 [   35.5s] inject: S2-commentary (message 2)
+[   51.9s] inject: S3-xrp (message 3)
+[   66.3s] inject: S4-gold (message 4)
+[   80.3s] inject: S5-incomplete (message 5)
+[   96.8s] inject: S6-ambiguous-close (message 6)
+[  111.2s] inject: S7-stale (message 7)
+[  142.5s] inject: S12-btc-50x (message 8)
+[  181.4s] inject: S13-eth (message 9)
+[  232.6s] inject: S10-occupied (message 10)
+[  301.9s] grace: I1 on PF_XBTUSD excused for 75s (S17 cancels the stop on purpose)
+[  301.9s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
+[  421.8s] grace: I5 on PF_SOLUSD excused for 75s (S18 sets leverage to 3x on purpose)
+[  421.8s] inject-divergence: set PF_SOLUSD leverage to 3x (S18)
+[  720.7s] kill: SIGKILLed bot; 10 orders resting
+[  730.7s] bot: started pid=50016
+[  730.7s] restart: bot restarted; recovery will run
+[  782.1s] post-restart: order count unchanged at 10
+[  901.8s] inject-divergence: opened a manual 1.0 SOL position (S19)
+[  960.9s] inject: S11-orphan-symbol (message 11)
+[ 1081.8s] inject: S15-partial (message 12)
+[ 1320.2s] inject: S16-close-eth (message 13)
+[ 1501.4s] inject: S16-close-all (message 14)
+
+======================================================================
+VERDICT: PASS
+checks verified      : 85/85
+violations           : 0
+unexplained repairs  : none
+decisions            : {'EXECUTED': 4, 'IGNORED': 2, 'REJECTED': 4, 'REQUIRES_REVIEW': 4}
+rejection reasons    : {'SPOT_SIGNAL': 1, 'NOT_EXECUTABLE_TYPE': 2, 'UNSUPPORTED_ASSET': 1, 'GOLD_PINNED_OFF': 1, 'MISSING_FIELDS': 1, 'STALE_ENTRY': 1, 'SYMBOL_ALREADY_ACTIVE': 1, 'UNRECOGNISED_POSITION': 1, 'AMBIGUOUS_CLOSE_TARGET': 1}
+final positions      : {'PF_SOLUSD': '1.0'}
+report               : /home/user/projects/kraken-signal-bot/soak/report.json
