@@ -472,7 +472,7 @@ EXCUSED_IN_CRITICAL_MODULES = {
     "run_cycle": "loop wrapper over run_once",
     "run_forever": "loop wrapper",
     "stop": "loop shutdown",
-    "handle_line": "called by the fill-stream reader",
+    "handle_line": "called by _run, the fill-stream reader thread",
     "start": "stream lifecycle",
     "_on_fill": "stream callback; wakes the loop only",
     "_log_report": "logging only",
