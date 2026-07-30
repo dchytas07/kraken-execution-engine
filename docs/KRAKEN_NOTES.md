@@ -169,13 +169,17 @@ Until Tests A–D are run, treat §1 as reasoned from documentation only.
 **Status update, 2026-07-30:** Tests A/B/C remain unrun — they each require a
 Spot API key deliberately provisioned with a specific permission combination,
 and no Spot credentials are configured on this machine (`KRAKEN_API_KEY` /
-`KRAKEN_API_SECRET` are both empty). Test D is blocked for a different reason:
-see §1.7 — the one Futures key that is configured does not authenticate at
-all, so `kraken futures accounts` cannot be confirmed working yet either.
+`KRAKEN_API_SECRET` are both empty).
+
+Test D: steps 2 and 3 are now confirmed — see §1.7 (auth was fixed on the
+operator's side between the first and second verification pass) and §1.8.
+Step 2's "order placement works in paper" was already established in earlier
+stages and is unaffected by this. Tests A–C remain the only unresolved part of
+§1.6.
 
 ---
 
-### 1.7 Live credential attempt, 2026-07-30 — futures key does not authenticate
+### 1.7 Live credential attempts, 2026-07-30
 
 Live `KRAKEN_FUTURES_API_KEY` / `KRAKEN_FUTURES_API_SECRET` were added to
 `.env`. Attempted, all read-only:
@@ -214,12 +218,69 @@ Futures **demo** environment rather than production; the key has an IP
 allowlist that excludes this machine; or the key was disabled/revoked after
 creation.
 
-**Consequence:** Test D and every check in §5 gated on a working authenticated
-futures call (§4.2 `stopPrice`, §1C Study B live re-confirmation, §6.3 the
-WebSocket fill stream) remain blocked — not on "no credentials" as before, but
-specifically on "the configured credential is rejected by Kraken." Re-run
-after regenerating/re-verifying the key in the Kraken Futures UI; nothing in
-this codebase needs to change.
+**Consequence at the time:** Test D and every check in §5 gated on a working
+authenticated futures call (§4.2 `stopPrice`, §1C Study B live
+re-confirmation, §6.3 the WebSocket fill stream) were blocked — not on "no
+credentials," but specifically on "the configured credential is rejected by
+Kraken."
+
+**Resolved, same day, second pass.** Re-running the identical calls minutes
+later succeeded — `kraken futures accounts` now returns `result: success`, and
+the bot's own `--check` reports `futures_connectivity: PASS`. Whatever caused
+the earlier rejection (most likely a freshly-created key not yet propagated —
+the ordinary explanation, and consistent with everything ruled out above)
+resolved itself without any change on this side. Nothing in this codebase
+needed fixing.
+
+---
+
+### 1.8 ⚠️ Live account state observed during verification, 2026-07-30
+
+The moment authenticated reads started working, the very first call
+(`futures accounts`) showed this is **not an empty account**:
+`balanceValue: $296.07`, `availableMargin: $141.52`,
+`initialMarginWithOrders: $151.35`, `totalUnrealized: -$3.17`.
+
+Follow-up reads (`futures positions`, `futures open-orders`, `futures ws
+fills`, all read-only) confirmed **four real open short positions**, each with
+a live stop and take-profit resting on the exchange:
+
+| Symbol | Side | Size | Entry | Unrealized PnL | Orders resting |
+|---|---|---|---|---|---|
+| PF_XBTUSD | short | 0.0047 | 64,541.0 | +$0.08 | 1 TP, 1 stop |
+| PF_ETHUSD | short | 0.079 | 1,897.4 | −$1.52 | 2 TP, 2 stop (duplicated) |
+| PF_SOLUSD | short | 4.08 | 73.5 | −$2.26 | 2 TP, 2 stop (duplicated) |
+| PF_XAUTUSD | short | 0.036 | 4,080.6 | +$0.77 | 2 TP, 2 stop (duplicated), 1 resting entry |
+
+The fill stream (`ws fills`) confirms these came from real fills — market and
+limit orders, real fees paid in USD, `realized_pnl` populated on at least one
+closed round-trip on `PF_ETHUSD`. Fill and order timestamps run
+2026-07-27 14:47 through 2026-07-29 19:05 UTC — all **before** this
+verification session, and before this bot's `TRADING_MODE` was ever anything
+but `paper`. **None of this was placed by this bot.** It is pre-existing
+activity on the account from outside this codebase — most plausibly the
+operator's own manual trading, or another tool using the same key.
+
+Two things worth flagging explicitly:
+
+1. **A live position exists on PF_XAUTUSD** — the exact instrument this bot's
+   own code refuses to trade (`ALLOW_XAUT_FOR_GOLD` pinned `False`, §1B Study
+   A). The bot didn't open it and won't manage it; it's exposure the operator
+   is carrying outside the bot's own safety envelope.
+2. **This is exactly the scenario `check_exchange_position` (the admission
+   gate) exists to catch** — a live position the local database doesn't know
+   about. If `TRADING_MODE=live` were ever set with the local DB in its
+   current (empty) state, a signal on any of these four symbols should be
+   admitted as `REQUIRES_REVIEW` rather than opening a second, uncoordinated
+   position. That behaviour was designed for exactly this account state and
+   has not been re-verified against it live, since doing so would require
+   actually flipping to live mode — out of scope here.
+
+This account is not in a clean state to begin live trading from. Whoever
+placed these positions should reconcile or close them (through their own
+tooling) before `TRADING_MODE=live` is ever set for this bot, or be prepared
+for the bot to quarantine signals on all four symbols on its first live
+startup.
 
 ---
 
@@ -457,16 +518,26 @@ support docs applies to **inverse and fixed-maturity** contracts (`PI_`, `FI_`),
 not to the `PF_` flexible futures traded here. Empirically confirmed: a
 0.0046 BTC `PF_XBTUSD` order filled at exactly that size.
 
-### 4.2 Paper omits `stop_price` on open orders
+### 4.2 Paper omits `stop_price` on open orders — RESOLVED, live confirmed
 
 `futures paper orders` returns `price: null` and no `stop_price` field even for
 stop orders, so a stop's trigger price cannot be read back in paper. One leg of
 the brief-16 verification (confirm the new stop has the correct trigger price)
 is therefore unverifiable in paper; size, existence, type and reduce-only are
-all verifiable. Live `open-orders` is expected to return `stopPrice` — **still
-unconfirmed.** Live credentials now exist, but the configured Futures key
-fails authentication (§1.7), and `open-orders` is an authenticated endpoint, so
-this remains untestable until that credential issue is resolved.
+all verifiable.
+
+**Confirmed live, 2026-07-30.** `kraken futures open-orders` against the live
+account returns `stopPrice` on every `stop` and `take_profit` order, e.g.:
+
+```json
+{"orderType":"stop","reduceOnly":true,"side":"buy","status":"untouched",
+ "stopPrice":4192.8,"symbol":"PF_XAUTUSD","triggerSignal":"mark", ...}
+```
+
+Live matches the paper-verified fields (size, existence, type, reduce-only)
+and adds the one live-only field. The brief-16 verification is now fully
+checkable against a real account; the paper gap is paper-only, not a real
+blind spot.
 
 ### 4.3 Leverage flag asymmetry
 
@@ -487,10 +558,17 @@ guard on `KrakenCliAdapter`.
 | Item | Blocked on | Section |
 |---|---|---|
 | Withdrawal tests A–C (spot key scope combinations) | operator creating 3 differently-scoped spot test keys | §1.6 |
-| Withdrawal test D (futures key connectivity + attestation) | the configured futures key fails authentication | §1.7 |
-| Live `open-orders` returns `stopPrice` | the configured futures key fails authentication | §1.7, §4.2 |
-| Re-confirm Study B on live | the configured futures key fails authentication | §1.7, §1C |
-| WebSocket fill stream auth against real credentials | the configured futures key fails authentication | §1.7, §7.4 |
+| Re-confirm Study B on live (leverage state semantics) | deliberately paused — see below | §1C |
+| **Account is not flat** — 4 pre-existing live positions found, incl. one on the pinned-disabled XAUTUSD | operator reconciling/closing outside this bot | §1.8 |
+
+Study B was **not attempted** this pass. B(a)/B(b) as originally scoped need
+`set-leverage` calls and, for full B(b) re-confirmation, a deliberately failed
+order — live mutations, not reads. The first authenticated read of this
+account (§1.8) turned up four pre-existing real positions and real capital at
+risk that this session didn't expect and didn't put there. Given that, running
+even a documented-safe mutation (§1C's own B(a) finding says `set-leverage`
+doesn't touch an open position) without checking in first seemed like the
+wrong call. Deferred pending explicit go-ahead.
 
 Closed since first written:
 - ~~Real minimum order size / min notional~~ — resolved from contract
@@ -500,6 +578,12 @@ Closed since first written:
   match exactly, no min-size field exists live either. §4.1.1
 - ~~Whether a key-permission introspection endpoint exists~~ — confirmed
   negative across all 151 commands. §1.4.1
+- ~~Withdrawal test D~~ — `futures accounts` now authenticates and the
+  attestation gate behaves as documented; both confirmed live. §1.7, §1.8
+- ~~Live `open-orders` returns `stopPrice`~~ — confirmed live, present on
+  every stop/take_profit order. §4.2
+- ~~WebSocket fill stream auth~~ — confirmed live: authenticates, returns a
+  well-formed `fills_snapshot` feed. §7.4
 
 ---
 
@@ -599,13 +683,21 @@ the precise failure reconciliation exists to repair. Stop client order ids are
 now sequenced (`SL-1`, `SL-2`, …). Still deterministic and enumerable, so crash
 recovery can walk the sequence and ask the exchange which exist.
 
-### 7.4 WebSocket fast path — untestable without credentials
+### 7.4 WebSocket fast path — auth confirmed live
 
 `futures ws fills` is auth-only with no paper equivalent, so the stream itself
-is unverified. Mitigated by design rather than by hope: the stream only *wakes*
-the reconciler and never mutates state, so a stream bug degrades latency and
-cannot corrupt anything. Line parsing is covered by tests against injected
-lines, including malformed input. Added to §5 outstanding.
+was unverified. Mitigated by design rather than by hope: the stream only
+*wakes* the reconciler and never mutates state, so a stream bug degrades
+latency and cannot corrupt anything. Line parsing is covered by tests against
+injected lines, including malformed input.
+
+**Confirmed live, 2026-07-30.** Connected with real credentials for a bounded
+window; received a well-formed `fills_snapshot` feed (`account`, `feed`,
+`fills[]` with `fill_id`, `order_id`, `instrument`, `price`, `qty`,
+`fee_paid`, `realized_pnl`, `time`) carrying real historical fills from the
+account's pre-existing activity (§1.8). Authentication and message shape are
+both now verified against the real feed, not just against injected test
+lines.
 
 ---
 
