@@ -40,6 +40,21 @@ from .engine import ExecutionEngine, ExecutionRefused
 
 log = get_logger(__name__)
 
+# A position must reach PROTECTED within this many seconds of its fill, by ANY
+# code path. Not an aspiration — the soak measures actual fill->protect latency
+# and fails the run if this is exceeded.
+#
+# Chosen from measurement, not by feel (tools/measure_tick.py):
+#   raw CLI read                     median 0.01s, max 0.06s
+#   full manage tick, 3 trades       median 17.3s, p95 26.7s, max 50.6s
+#
+# A full step costs O(open orders) CLI calls, so it degrades exactly as a book
+# grows — worst case ~53s including the loop interval, barely better than the
+# 60s reconciler. So protection cannot ride on the full step. protection_sweep()
+# is O(1) in orders (two calls total) and runs on its own fast cadence, which is
+# what makes 15s achievable with margin.
+PROTECTION_SLA_SECONDS = 15
+
 
 @dataclass(slots=True)
 class StepResult:
@@ -69,6 +84,47 @@ class TradeManager:
         self._spec_by_symbol = {s.symbol: s for s in specs.values()}
 
     # ------------------------------------------------------------------
+
+    def protection_sweep(self) -> list[str]:
+        """Protect every unprotected position. Cheap, and safe to run often.
+
+        Exactly TWO exchange reads regardless of how many trades or orders
+        exist, because it asks only "what positions are open?" and "where are
+        the stops?". The full step is O(open orders) and measured at 17-50s
+        with three trades; this is the mechanism that actually meets
+        PROTECTION_SLA_SECONDS.
+
+        Deliberately does nothing else: no TPs, no breakeven, no closes. It is
+        the one thing that must never queue behind slower work.
+        """
+        protected: list[str] = []
+        try:
+            positions = [p for p in self.client.get_open_positions() if not p.is_flat]
+            if not positions:
+                return protected
+            orders = self.client.get_open_orders()
+        except Exception:
+            log.error("protection sweep could not read the exchange",
+                      exc_info=True, extra={"action": "sweep_failed"})
+            return protected
+
+        stopped = {o.symbol for o in orders if o.order_type == "stop"}
+        for position in positions:
+            if position.symbol in stopped:
+                continue
+            trade = self.store.get_active_trade_for_symbol(position.symbol)
+            if trade is None:
+                continue  # orphan: never adopted, reported by reconciliation
+            if TradeState(trade["state"]).is_terminal:
+                continue
+            spec = self._spec_by_symbol.get(position.symbol)
+            if spec is None:
+                continue
+            if self.ensure_protected(
+                trade["id"], spec, Direction(trade["direction"]), position
+            ):
+                protected.append(position.symbol)
+        return protected
 
     def step_all(self) -> list[StepResult]:
         """Advance every open trade one step."""

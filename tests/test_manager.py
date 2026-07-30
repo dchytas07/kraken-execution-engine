@@ -389,3 +389,78 @@ def test_quarantined_trade_gets_no_new_strategy_orders(rig):
     store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW)
     manager.step(trade_id)
     assert store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT) == []
+
+
+# ==========================================================================
+# Protection SLA and the O(1) sweep (soak run 4 finding)
+# ==========================================================================
+
+
+def test_protection_sweep_costs_two_reads_regardless_of_book_size(rig):
+    """The property that makes the SLA achievable.
+
+    A full step costs O(open orders) and was measured at 17s median / 50s max
+    with three trades. The sweep must not scale that way.
+    """
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    manager.step(trade_id)  # creates a stop + 4 TPs
+
+    calls = {"n": 0}
+    for name in ("get_open_positions", "get_open_orders"):
+        original = getattr(exchange, name)
+
+        def counted(*a, _o=original, **k):
+            calls["n"] += 1
+            return _o(*a, **k)
+        setattr(exchange, name, counted)
+
+    manager.protection_sweep()
+    assert calls["n"] <= 2, f"sweep made {calls['n']} exchange reads, expected <=2"
+
+
+def test_sweep_protects_an_unprotected_position(rig):
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    engine.sync_entry_fills(trade_id)
+    assert stops(exchange) == []
+
+    assert manager.protection_sweep() == ["PF_XBTUSD"]
+    assert len(stops(exchange)) == 1
+    assert stops(exchange)[0].size == exchange.get_position("PF_XBTUSD").size
+
+
+def test_sweep_is_idempotent(rig):
+    manager, engine, exchange, store, trade_id, uid = rig
+    opened(engine, exchange, trade_id, uid)
+    engine.sync_entry_fills(trade_id)
+    manager.protection_sweep()
+    assert manager.protection_sweep() == []
+    assert len(stops(exchange)) == 1
+
+
+def test_sweep_never_adopts_an_orphan(rig):
+    """No local trade means no protection — adopting it is exactly what
+    reconciliation refuses to do."""
+    manager, engine, exchange, store, trade_id, uid = rig
+    store.transition_trade(trade_id, TradeState.CANCELLED)
+    exchange.positions["PF_XBTUSD"] = __import__(
+        "bot.exchange.base", fromlist=["Position"]
+    ).Position(symbol="PF_XBTUSD", side="long", size=D("0.005"),
+               entry_price=D(64000))
+    assert manager.protection_sweep() == []
+    assert stops(exchange) == []
+
+
+def test_sweep_survives_an_unreadable_exchange(rig):
+    manager, engine, exchange, store, trade_id, uid = rig
+
+    def explode():
+        raise RuntimeError("exchange unreachable")
+    exchange.get_open_positions = explode
+    assert manager.protection_sweep() == []  # logged, not raised
+
+
+def test_sla_constant_is_documented_and_sane():
+    from bot.execution.manager import PROTECTION_SLA_SECONDS
+    assert 0 < PROTECTION_SLA_SECONDS <= 30

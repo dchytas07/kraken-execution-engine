@@ -26,13 +26,15 @@ from bot.killswitch import KillSwitch  # noqa: E402
 from bot.logging_setup import get_logger, setup_logging  # noqa: E402
 from bot.pipeline import SignalPipeline, build_admission  # noqa: E402
 from bot.reconcile import Reconciler  # noqa: E402
+from bot.runner import BotRunner, LoopIntervals  # noqa: E402
 from bot.recovery import RecoveryManager  # noqa: E402
 
 log = get_logger("soak.bot")
 
 INBOX = Path(os.environ["SOAK_INBOX"])
 DONE = Path(os.environ["SOAK_DONE"])
-MANAGE_INTERVAL = float(os.environ.get("SOAK_MANAGE_INTERVAL", "3"))
+SWEEP_INTERVAL = float(os.environ.get("SOAK_SWEEP_INTERVAL", "2"))
+MANAGE_INTERVAL = float(os.environ.get("SOAK_MANAGE_INTERVAL", "15"))
 RECONCILE_INTERVAL = float(os.environ.get("SOAK_RECONCILE_INTERVAL", "60"))
 
 
@@ -80,8 +82,15 @@ def main() -> int:
         engine=engine, specs=specs, manager=manager,
     )
 
+    runner = BotRunner(
+        manager=manager, reconciler=reconciler,
+        intervals=LoopIntervals(
+            sweep_seconds=SWEEP_INTERVAL,
+            manage_seconds=MANAGE_INTERVAL,
+            reconcile_seconds=RECONCILE_INTERVAL,
+        ),
+    )
     log.info("soak bot ready", extra={"action": "soak_ready"})
-    last_reconcile = 0.0
     while True:
         # Inbox: stands in for Telegram, same pipeline path.
         for path in sorted(INBOX.glob("*.txt")):
@@ -102,28 +111,9 @@ def main() -> int:
             finally:
                 path.rename(DONE / path.name)
 
-        try:
-            manager.step_all()
-        except Exception:
-            log.error("manage loop error", exc_info=True,
-                      extra={"action": "soak_manage_failed"})
-
-        now = time.monotonic()
-        if now - last_reconcile >= RECONCILE_INTERVAL:
-            last_reconcile = now
-            try:
-                report = reconciler.run_once()
-                for d in report.discrepancies:
-                    log.info(
-                        f"reconcile {d.kind.value} repaired={d.repaired} "
-                        f"{d.detail}",
-                        extra={"action": "soak_reconcile"},
-                    )
-            except Exception:
-                log.error("reconcile error", exc_info=True,
-                          extra={"action": "soak_reconcile_failed"})
-
-        time.sleep(MANAGE_INTERVAL)
+        # The REAL production loop, not a harness reimplementation.
+        runner.tick()
+        time.sleep(SWEEP_INTERVAL)
 
 
 if __name__ == "__main__":

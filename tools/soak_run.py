@@ -48,6 +48,13 @@ violations: list[dict] = []
 events: list[dict] = []
 checks_attempted = [0]
 checks_verified = [0]
+# A deliberately injected divergence necessarily violates the invariant it
+# targets, from injection until repair. Counting that as a bot failure is a
+# criteria error: it measures the injection, not the system. Suppress only the
+# specific invariant, only on the specific symbol, only for the repair window.
+injection_grace: dict[tuple[str, str], float] = {}
+INJECTION_GRACE_S = 75.0   # one 60s reconcile cycle + margin
+protection_latencies: list[tuple[str, float]] = []
 # Divergences we injected on purpose, so their repairs are explained.
 expected_repairs: Counter = Counter()
 observed_repairs: Counter = Counter()
@@ -60,7 +67,18 @@ def log(kind: str, detail: str, **extra):
     print(f"[{entry['t']:7.1f}s] {kind}: {detail}", flush=True)
 
 
+def grace(invariant: str, symbol: str, reason: str):
+    injection_grace[(invariant, symbol)] = time.monotonic() + INJECTION_GRACE_S
+    log("grace", f"{invariant} on {symbol} excused for "
+                 f"{INJECTION_GRACE_S:.0f}s ({reason})")
+
+
 def violate(inv: str, detail: str):
+    # Within the grace window of a deliberate injection this is expected, not a
+    # finding. Anything still violating after the window IS a finding.
+    for (g_inv, g_sym), until in injection_grace.items():
+        if g_inv == inv and g_sym in detail and time.monotonic() < until:
+            return
     violations.append({"t": round(time.monotonic() - T0, 1), "invariant": inv,
                        "detail": detail})
     print(f"[{time.monotonic()-T0:7.1f}s] !! VIOLATION {inv}: {detail}", flush=True)
@@ -229,6 +247,37 @@ def check_invariants(ad: KrakenCliAdapter, store: Store, *, allow_orphan: set[st
                                    f"holds {positions[row['symbol']].size}")
 
 
+def measure_protection_latency() -> list[tuple[str, float]]:
+    """Actual fill -> protected latency, per position, from the bot log.
+
+    Gives the SLA a measured number instead of a binary "was there a stop at
+    the moment I happened to look".
+    """
+    import datetime as _dt
+    fills: dict[str, _dt.datetime] = {}
+    out: list[tuple[str, float]] = []
+    if not BOT_LOG.exists():
+        return out
+    for line in BOT_LOG.read_text().splitlines():
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        ts = d.get("ts")
+        symbol = d.get("symbol") or ""
+        if not ts:
+            continue
+        when = _dt.datetime.fromisoformat(ts)
+        msg = d.get("msg", "")
+        if d.get("action") == "position_updated" or "position " in msg:
+            fills.setdefault(symbol, when)
+        if d.get("action") in ("protected", "sweep_protected") and symbol:
+            first = fills.pop(symbol, None)
+            if first is not None:
+                out.append((symbol, (when - first).total_seconds()))
+    return out
+
+
 def collect_repairs(store: Store):
     rows = store._conn.execute(
         "SELECT summary FROM events WHERE event_type IN "
@@ -394,7 +443,13 @@ def main() -> int:
         stops = [o for o in a.get_open_orders() if o.order_type == "stop"]
         if stops:
             a.cancel_order(stops[0].exchange_order_id)
+            # Cancelling a stop produces TWO findings, not one: the position is
+            # briefly unprotected, AND the local order row now points at an
+            # order that is neither resting nor filled. Run 4 registered only
+            # the first and reported the second as unexplained.
             expected_repairs["UNPROTECTED_POSITION"] += 1
+            expected_repairs["ORDER_MISSING_ON_EXCHANGE"] += 1
+            grace("I1", stops[0].symbol, "S17 cancels the stop on purpose")
             log("inject-divergence", f"cancelled stop {stops[0].exchange_order_id} "
                                     f"on {stops[0].symbol} (S17)")
         else:
@@ -405,6 +460,7 @@ def main() -> int:
         a = adapter()
         a.cli.run("futures", "paper", "set-leverage", "PF_SOLUSD", "3")
         expected_repairs["LEVERAGE_DRIFT"] += 1
+        grace("I5", "PF_SOLUSD", "S18 sets leverage to 3x on purpose")
         log("inject-divergence", "set PF_SOLUSD leverage to 3x (S18)")
     at(420, leak_leverage, "S18")
 
@@ -546,6 +602,15 @@ def main() -> int:
     }
 
     state["proc"].send_signal(signal.SIGTERM)
+    protection_latencies.extend(measure_protection_latency())
+    from bot.execution.manager import PROTECTION_SLA_SECONDS
+    breaches = [(s_, l) for s_, l in protection_latencies
+                if l > PROTECTION_SLA_SECONDS]
+    for symbol, latency in breaches:
+        violate("PROTECTION_SLA",
+                f"{symbol} took {latency:.1f}s to reach protected "
+                f"(SLA {PROTECTION_SLA_SECONDS}s)")
+
     # A run in which the checker could not see cannot pass.
     verified_ratio = (checks_verified[0] / checks_attempted[0]
                       if checks_attempted[0] else 0.0)
@@ -561,6 +626,10 @@ def main() -> int:
         "generated_at": datetime.now(UTC).isoformat(),
         "duration_s": DURATION,
         "verdict": "PASS" if passed else "FAIL",
+        "protection_latencies": [
+            {"symbol": s_, "seconds": round(l, 2)} for s_, l in protection_latencies
+        ],
+        "protection_sla_seconds": PROTECTION_SLA_SECONDS,
         "checks_attempted": checks_attempted[0],
         "checks_verified": checks_verified[0],
         "violations": violations,
@@ -577,6 +646,10 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     print(f"VERDICT: {report['verdict']}")
+    if protection_latencies:
+        worst = max(l for _, l in protection_latencies)
+        print(f"protection latency   : max {worst:.1f}s "
+              f"(SLA {PROTECTION_SLA_SECONDS}s, {len(protection_latencies)} samples)")
     print(f"checks verified      : {checks_verified[0]}/{checks_attempted[0]}")
     print(f"violations           : {len(violations)}")
     print(f"unexplained repairs  : {unexplained or 'none'}")

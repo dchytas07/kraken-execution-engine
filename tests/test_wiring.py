@@ -87,6 +87,8 @@ SAFETY_FUNCTIONS = {
     "ensure_protected": "same-cycle protection guarantee",
     "ensure_take_profits": "brief 13 — place the ladder once, from intent",
     "step": "the forward lifecycle driver",
+    "protection_sweep": "PROTECTION_SLA — O(1) protection, cannot be starved",
+    "tick": "the production loop iteration; protection runs first",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -429,6 +431,7 @@ NOT_SAFETY_MECHANISMS = {
 CRITICAL_MODULES = (
     "execution/engine.py",
     "execution/manager.py",
+    "runner.py",
     "reconcile.py",
     "recovery.py",
     "admission.py",
@@ -440,6 +443,7 @@ CRITICAL_MODULES = (
 EXCUSED_IN_CRITICAL_MODULES = {
     # constructors / plumbing
     "__init__": "constructor",
+    "__post_init__": "dataclass validation; LoopIntervals asserts the SLA here",
     "build_admission": "construction; asserted by its own test",
     # data accessors, no behaviour
     "refused": "AdmissionResult accessor",
