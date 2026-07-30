@@ -89,6 +89,7 @@ SAFETY_FUNCTIONS = {
     "step": "the forward lifecycle driver",
     "protection_sweep": "PROTECTION_SLA — O(1) protection, cannot be starved",
     "tick": "the production loop iteration; protection runs first",
+    "send_alert": "real-time Telegram alert on REQUIRES_REVIEW/SAFE_ERROR",
 }
 
 # Properties are accessed without parentheses, so they need their own check.

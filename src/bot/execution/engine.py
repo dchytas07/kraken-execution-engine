@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from ..alerting import send_alert
 from ..config import Config
 from ..db.store import Store
 from ..exchange.base import ExchangeClient, OrderRequest, Position
@@ -125,17 +126,36 @@ class ExecutionEngine:
         nobody is watching in real time. Brief 32 requires dangerous
         inconsistencies to be loud, so every SAFE_ERROR also emits a CRITICAL
         log line — that is the channel an operator actually sees.
+
+        A real-time Telegram alert is sent on the actual transition (not on a
+        repeat call while already in SAFE_ERROR) — see alerting.py. Best-effort:
+        a failed send is logged and swallowed, never allowed to affect the
+        transition it's reporting on.
         """
+        row = self.store.get_trade(trade_id)
+        symbol = row["symbol"]
+        message = f"SAFE_ERROR trade {trade_id} ({symbol}): {summary}"
         log.critical(
-            f"SAFE_ERROR trade {trade_id}: {summary}",
+            message,
             extra={"trade_id": trade_id, "action": "safe_error", **ctx},
         )
         self.store.append_event(
             EventType.SAFETY_CHECK_FAILED, summary, trade_id=trade_id, severity="ERROR"
         )
-        state = TradeState(self.store.get_trade(trade_id)["state"])
+        state = TradeState(row["state"])
         if state is not TradeState.SAFE_ERROR and not state.is_terminal:
             self.store.transition_trade(trade_id, TradeState.SAFE_ERROR, summary)
+            try:
+                send_alert(
+                    self.config.alert_telegram_bot_token,
+                    self.config.alert_telegram_chat_id,
+                    message,
+                )
+            except Exception as exc:  # noqa: BLE001 — alerting must never crash the bot
+                log.warning(
+                    f"alert send raised unexpectedly: {exc}",
+                    extra={"trade_id": trade_id, "action": "alert_failed"},
+                )
 
     # ------------------------------------------------------------------
     # Planning

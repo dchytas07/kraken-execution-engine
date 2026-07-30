@@ -287,7 +287,21 @@ managed and closes still work.
    signal is recorded `REQUIRES_REVIEW`. Concurrency across symbols is
    unlimited.
 9. **No dashboard.** Deliberate — structured JSON logs, the SQLite database and
-   `tools/test_inject.py` are the observability surface.
+   `tools/test_inject.py` are the observability surface. ~~The two states an
+   operator most needs to know about immediately~~ — **resolved.**
+   `REQUIRES_REVIEW` and `SAFE_ERROR` now push a real-time Telegram alert the
+   moment a trade actually transitions into either (`src/bot/alerting.py`,
+   wired at the two places those transitions happen: `_enter_safe_error` in
+   `execution/engine.py` and the crash-window loop in `recovery.py`). Uses a
+   separate send-only Bot API credential (`ALERT_TELEGRAM_BOT_TOKEN`/
+   `ALERT_TELEGRAM_CHAT_ID`), distinct from the Telethon user-account listener
+   that reads the signal channel. Best-effort by design — a failed send is
+   logged and swallowed, never allowed to block or crash the transition it's
+   reporting on (covered by dedicated failure-injection tests). Run
+   `python -m bot.main --test-alert` to confirm the credentials work
+   standalone, without running startup or touching the exchange. Everything
+   else about observability here still holds: no dashboard, logs/DB/
+   test_inject remain the surface for anything short of these two states.
 
 ### Known behaviours worth knowing
 

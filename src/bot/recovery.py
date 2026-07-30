@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
+from .alerting import send_alert
 from .config import Config
 from .db.store import Store
 from .exchange.base import ExchangeClient, ExchangeError
@@ -214,15 +215,27 @@ class RecoveryManager:
 
         # 4. Trades whose intents could not be resolved go to review BEFORE
         #    reconciliation touches them, so it does not act on a trade whose
-        #    true position is unknown.
+        #    true position is unknown. A real-time alert fires on the actual
+        #    transition (not on a repeat pass over an already-quarantined
+        #    trade) — see alerting.py. Best-effort: never allowed to affect
+        #    the transition itself.
+        reason = "unresolvable order intent after restart"
         for trade_id in result.trades_needing_review:
-            state = TradeState(self.store.get_trade(trade_id)["state"])
+            row = self.store.get_trade(trade_id)
+            state = TradeState(row["state"])
             if not state.is_terminal and state is not TradeState.REQUIRES_REVIEW:
-                self.store.transition_trade(
-                    trade_id,
-                    TradeState.REQUIRES_REVIEW,
-                    "unresolvable order intent after restart",
-                )
+                self.store.transition_trade(trade_id, TradeState.REQUIRES_REVIEW, reason)
+                try:
+                    send_alert(
+                        self.config.alert_telegram_bot_token,
+                        self.config.alert_telegram_chat_id,
+                        f"REQUIRES_REVIEW trade {trade_id} ({row['symbol']}): {reason}",
+                    )
+                except Exception as exc:  # noqa: BLE001 — must never crash recovery
+                    log.warning(
+                        f"alert send raised unexpectedly: {exc}",
+                        extra={"trade_id": trade_id, "action": "alert_failed"},
+                    )
             log.error(
                 f"trade {trade_id} needs review: an order intent could not be "
                 "resolved against the exchange after restart",

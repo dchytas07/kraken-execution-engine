@@ -56,6 +56,8 @@ class Session:
             "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
             "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
             "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
+            "ALERT_TELEGRAM_BOT_TOKEN": "TEST_BOT_TOKEN",
+            "ALERT_TELEGRAM_CHAT_ID": "TEST_CHAT_ID",
         }, dotenv_path=None)
         self.store = Store(tmp_path / "recovery.db")
         self.kill_switch = KillSwitch(path=tmp_path / "KILL")
@@ -375,6 +377,64 @@ def test_missing_order_with_a_live_position_is_ambiguous_not_assumed(session):
 
     assert IntentOutcome.AMBIGUOUS in outcomes(result)
     assert trade_id in result.trades_needing_review
+    assert restarted.store.get_trade(trade_id)["state"] == \
+        TradeState.REQUIRES_REVIEW.value
+    restarted.store.close()
+
+
+def _crash_into_requires_review(session):
+    """Same ambiguity scenario as the test above, factored out for reuse."""
+    trade_id, uid = new_trade(session)
+    session.store.record_order_intent(
+        trade_id=trade_id, client_order_id=f"{uid}-ENTRY-1",
+        purpose=OrderPurpose.ENTRY, symbol="PF_XBTUSD", side="buy",
+        order_type="limit", quantity=D("0.0023"), price=D(64000), sequence=1,
+    )
+    session.store.transition_trade(trade_id, TradeState.WAITING_FOR_ENTRY)
+    session.exchange.position = Position(symbol="PF_XBTUSD", side="long",
+                                         size=D("0.0023"), entry_price=D(64000))
+    return trade_id
+
+
+def test_requires_review_sends_real_time_alert_with_trade_symbol_and_reason(
+    session, monkeypatch
+):
+    """The alert must name the trade, its symbol, the state, and reuse the
+    same reason already being logged — not a generic "something happened"."""
+    calls = []
+    monkeypatch.setattr(
+        "bot.recovery.send_alert",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)) or True,
+    )
+    trade_id = _crash_into_requires_review(session)
+
+    restarted = session.crash()
+    restarted.recovery.recover()
+
+    assert restarted.store.get_trade(trade_id)["state"] == \
+        TradeState.REQUIRES_REVIEW.value
+    assert len(calls) == 1, "exactly one alert on the actual transition"
+    token, chat_id, text = calls[0]
+    assert token == "TEST_BOT_TOKEN"
+    assert chat_id == "TEST_CHAT_ID"
+    assert "REQUIRES_REVIEW" in text
+    assert str(trade_id) in text
+    assert "PF_XBTUSD" in text
+    assert "unresolvable order intent after restart" in text  # same reason as the log
+    restarted.store.close()
+
+
+def test_requires_review_alert_failure_does_not_block_recovery(session, monkeypatch):
+    """A failed send must never crash the bot or block the transition."""
+    monkeypatch.setattr(
+        "bot.recovery.send_alert",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("network is down")),
+    )
+    trade_id = _crash_into_requires_review(session)
+
+    restarted = session.crash()
+    restarted.recovery.recover()  # must not raise, despite the alert exploding
+
     assert restarted.store.get_trade(trade_id)["state"] == \
         TradeState.REQUIRES_REVIEW.value
     restarted.store.close()

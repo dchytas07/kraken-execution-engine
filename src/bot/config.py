@@ -58,6 +58,9 @@ class Config:
     telegram_channel: str | None
     telegram_session_path: Path
 
+    alert_telegram_bot_token: str | None
+    alert_telegram_chat_id: str | None
+
     kill_switch_path: Path
     db_path: Path
     log_path: Path
@@ -264,6 +267,14 @@ def load_config(
     telegram_api_hash = _raw(env, "TELEGRAM_API_HASH")
     telegram_channel = _raw(env, "TELEGRAM_CHANNEL")
 
+    # -- alerting -------------------------------------------------------------
+    # A separate send-only Bot API credential, distinct from the telegram_*
+    # user-account listener fields above. Optional: alerting is best-effort
+    # and must never gate startup, so an absent value degrades to "no alert
+    # sent, logged as a warning" rather than a ConfigError.
+    alert_telegram_bot_token = _raw(env, "ALERT_TELEGRAM_BOT_TOKEN")
+    alert_telegram_chat_id = _raw(env, "ALERT_TELEGRAM_CHAT_ID")
+
     # -- paths --------------------------------------------------------------
     kill_switch_path = Path(_raw(env, "KILL_SWITCH_PATH") or "./KILL_SWITCH")
     db_path = Path(_raw(env, "DB_PATH") or "./data/bot.db")
@@ -294,6 +305,8 @@ def load_config(
         telegram_api_hash=telegram_api_hash,
         telegram_channel=telegram_channel,
         telegram_session_path=telegram_session_path,
+        alert_telegram_bot_token=alert_telegram_bot_token,
+        alert_telegram_chat_id=alert_telegram_chat_id,
         kill_switch_path=kill_switch_path,
         db_path=db_path,
         log_path=log_path,
@@ -318,5 +331,6 @@ def collect_secrets(env: dict[str, str] | None = None) -> set[str]:
         "KRAKEN_FUTURES_API_SECRET",
         "TELEGRAM_API_HASH",
         "LIVE_TRADING_ACK",
+        "ALERT_TELEGRAM_BOT_TOKEN",
     )
     return {v.strip() for k in keys if (v := source.get(k)) and len(v.strip()) >= 8}

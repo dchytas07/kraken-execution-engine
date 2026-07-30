@@ -238,6 +238,8 @@ def config(tmp_path):
             "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
             "DB_PATH": str(tmp_path / "t.db"),
             "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
+            "ALERT_TELEGRAM_BOT_TOKEN": "TEST_BOT_TOKEN",
+            "ALERT_TELEGRAM_CHAT_ID": "TEST_CHAT_ID",
         },
         dotenv_path=None,
     )
@@ -1106,6 +1108,62 @@ def test_failed_stop_resize_is_loud_and_enters_safe_error(setup, caplog):
 
     assert store.get_trade(trade_id)["state"] == TradeState.SAFE_ERROR.value
     assert any("UNPROTECTED" in r.message for r in caplog.records)
+
+
+def test_safe_error_sends_real_time_alert_with_trade_symbol_and_reason(setup, monkeypatch):
+    """The alert must name the trade, its symbol, the state, and reuse the
+    same reason already being logged — not a generic "something happened"."""
+    engine, exchange, store, trade_id, uid = setup
+    calls = []
+    monkeypatch.setattr(
+        "bot.execution.engine.send_alert",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)) or True,
+    )
+
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    exchange.amend_fails = True
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+
+    assert store.get_trade(trade_id)["state"] == TradeState.SAFE_ERROR.value
+    assert len(calls) == 1, "exactly one alert on the actual transition"
+    token, chat_id, text = calls[0]
+    assert token == "TEST_BOT_TOKEN"
+    assert chat_id == "TEST_CHAT_ID"
+    assert "SAFE_ERROR" in text
+    assert str(trade_id) in text
+    assert "PF_XBTUSD" in text
+    assert "UNPROTECTED" in text  # the same reason already being logged
+
+
+def test_safe_error_alert_failure_does_not_block_transition(setup, monkeypatch):
+    """A failed send must never crash the bot or block the transition."""
+    engine, exchange, store, trade_id, uid = setup
+    monkeypatch.setattr(
+        "bot.execution.engine.send_alert",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("network is down")),
+    )
+
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=exchange.get_position("PF_XBTUSD"))
+
+    exchange.amend_fails = True
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)  # must not raise, despite the alert exploding
+
+    assert store.get_trade(trade_id)["state"] == TradeState.SAFE_ERROR.value
 
 
 # ==========================================================================

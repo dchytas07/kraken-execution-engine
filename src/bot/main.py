@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 
+from .alerting import send_alert
 from .config import Config, ConfigError, collect_secrets, load_config
 from .db.store import Store
 from .exchange.cli import KrakenCli
@@ -159,6 +160,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run startup validation and exit",
     )
+    parser.add_argument(
+        "--test-alert",
+        action="store_true",
+        help=(
+            "send one test message via ALERT_TELEGRAM_BOT_TOKEN/"
+            "ALERT_TELEGRAM_CHAT_ID and exit — confirms the alert "
+            "credentials work without running startup or touching the "
+            "exchange"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -172,6 +183,23 @@ def main(argv: list[str] | None = None) -> int:
         level=config.log_level,
         secrets=collect_secrets(),
     )
+
+    if args.test_alert:
+        ok = send_alert(
+            config.alert_telegram_bot_token,
+            config.alert_telegram_chat_id,
+            "Test alert from kraken-signal-bot: if you're reading this, "
+            "ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID are correct.",
+        )
+        if ok:
+            print("Test alert sent — check Telegram.")
+            return 0
+        print(
+            "Test alert FAILED to send — see the log above for why "
+            "(missing credentials, bad token, or a network error).",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         store, _ = startup(config)
