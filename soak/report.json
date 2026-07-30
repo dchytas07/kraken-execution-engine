@@ -1,8 +1,17 @@
 {
-  "generated_at": "2026-07-30T02:31:30.975139+00:00",
+  "generated_at": "2026-07-30T03:03:48.367823+00:00",
   "duration_s": 1800.0,
   "verdict": "PASS",
-  "protection_latencies": [],
+  "protection_latencies": [
+    {
+      "symbol": "PF_XBTUSD",
+      "seconds": 0.56
+    },
+    {
+      "symbol": "PF_ETHUSD",
+      "seconds": 0.84
+    }
+  ],
   "protection_sla_seconds": 15,
   "checks_attempted": 85,
   "checks_verified": 85,
@@ -61,12 +70,12 @@
     {
       "t": 0.0,
       "kind": "start",
-      "detail": "soak begins; marks ['PF_XBTUSD=64250.12', 'PF_ETHUSD=1915.91', 'PF_SOLUSD=74.01']"
+      "detail": "soak begins; marks ['PF_XBTUSD=64177.49', 'PF_ETHUSD=1910.05', 'PF_SOLUSD=73.84']"
     },
     {
       "t": 0.0,
       "kind": "bot",
-      "detail": "started pid=45214"
+      "detail": "started pid=53856"
     },
     {
       "t": 21.0,
@@ -93,19 +102,19 @@
       "message_id": 4
     },
     {
-      "t": 80.3,
+      "t": 80.4,
       "kind": "inject",
       "detail": "S5-incomplete (message 5)",
       "message_id": 5
     },
     {
-      "t": 96.8,
+      "t": 96.9,
       "kind": "inject",
       "detail": "S6-ambiguous-close (message 6)",
       "message_id": 6
     },
     {
-      "t": 111.2,
+      "t": 111.3,
       "kind": "inject",
       "detail": "S7-stale (message 7)",
       "message_id": 7
@@ -117,82 +126,82 @@
       "message_id": 8
     },
     {
-      "t": 181.4,
+      "t": 180.9,
       "kind": "inject",
       "detail": "S13-eth (message 9)",
       "message_id": 9
     },
     {
-      "t": 232.6,
+      "t": 230.3,
       "kind": "inject",
       "detail": "S10-occupied (message 10)",
       "message_id": 10
     },
     {
-      "t": 301.9,
+      "t": 300.6,
       "kind": "grace",
       "detail": "I1 on PF_XBTUSD excused for 75s (S17 cancels the stop on purpose)"
     },
     {
-      "t": 301.9,
+      "t": 300.6,
       "kind": "inject-divergence",
       "detail": "cancelled stop FP-00005 on PF_XBTUSD (S17)"
     },
     {
-      "t": 421.8,
+      "t": 421.5,
       "kind": "grace",
       "detail": "I5 on PF_SOLUSD excused for 75s (S18 sets leverage to 3x on purpose)"
     },
     {
-      "t": 421.8,
+      "t": 421.5,
       "kind": "inject-divergence",
       "detail": "set PF_SOLUSD leverage to 3x (S18)"
     },
     {
-      "t": 720.7,
+      "t": 722.1,
       "kind": "kill",
       "detail": "SIGKILLed bot; 10 orders resting"
     },
     {
-      "t": 730.7,
+      "t": 730.1,
       "kind": "bot",
-      "detail": "started pid=50016"
+      "detail": "started pid=58560"
     },
     {
-      "t": 730.7,
+      "t": 730.1,
       "kind": "restart",
       "detail": "bot restarted; recovery will run"
     },
     {
-      "t": 782.1,
+      "t": 782.0,
       "kind": "post-restart",
       "detail": "order count unchanged at 10"
     },
     {
-      "t": 901.8,
+      "t": 902.3,
       "kind": "inject-divergence",
       "detail": "opened a manual 1.0 SOL position (S19)"
     },
     {
-      "t": 960.9,
+      "t": 961.6,
       "kind": "inject",
       "detail": "S11-orphan-symbol (message 11)",
       "message_id": 11
     },
     {
-      "t": 1081.8,
+      "t": 1081.1,
       "kind": "inject",
       "detail": "S15-partial (message 12)",
       "message_id": 12
     },
     {
-      "t": 1320.2,
+      "t": 1320.3,
       "kind": "inject",
       "detail": "S16-close-eth (message 13)",
       "message_id": 13
     },
     {
-      "t": 1501.4,
+      "t": 1500.7,
       "kind": "inject",
       "detail": "S16-close-all (message 14)",
       "message_id": 14

@@ -1,32 +1,33 @@
   clean start verified: 0 positions, 0 orders
-[    0.0s] start: soak begins; marks ['PF_XBTUSD=64250.12', 'PF_ETHUSD=1915.91', 'PF_SOLUSD=74.01']
-[    0.0s] bot: started pid=45214
+[    0.0s] start: soak begins; marks ['PF_XBTUSD=64177.49', 'PF_ETHUSD=1910.05', 'PF_SOLUSD=73.84']
+[    0.0s] bot: started pid=53856
 [   21.0s] inject: S1-spot (message 1)
 [   35.5s] inject: S2-commentary (message 2)
 [   51.9s] inject: S3-xrp (message 3)
 [   66.3s] inject: S4-gold (message 4)
-[   80.3s] inject: S5-incomplete (message 5)
-[   96.8s] inject: S6-ambiguous-close (message 6)
-[  111.2s] inject: S7-stale (message 7)
+[   80.4s] inject: S5-incomplete (message 5)
+[   96.9s] inject: S6-ambiguous-close (message 6)
+[  111.3s] inject: S7-stale (message 7)
 [  142.5s] inject: S12-btc-50x (message 8)
-[  181.4s] inject: S13-eth (message 9)
-[  232.6s] inject: S10-occupied (message 10)
-[  301.9s] grace: I1 on PF_XBTUSD excused for 75s (S17 cancels the stop on purpose)
-[  301.9s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
-[  421.8s] grace: I5 on PF_SOLUSD excused for 75s (S18 sets leverage to 3x on purpose)
-[  421.8s] inject-divergence: set PF_SOLUSD leverage to 3x (S18)
-[  720.7s] kill: SIGKILLed bot; 10 orders resting
-[  730.7s] bot: started pid=50016
-[  730.7s] restart: bot restarted; recovery will run
-[  782.1s] post-restart: order count unchanged at 10
-[  901.8s] inject-divergence: opened a manual 1.0 SOL position (S19)
-[  960.9s] inject: S11-orphan-symbol (message 11)
-[ 1081.8s] inject: S15-partial (message 12)
-[ 1320.2s] inject: S16-close-eth (message 13)
-[ 1501.4s] inject: S16-close-all (message 14)
+[  180.9s] inject: S13-eth (message 9)
+[  230.3s] inject: S10-occupied (message 10)
+[  300.6s] grace: I1 on PF_XBTUSD excused for 75s (S17 cancels the stop on purpose)
+[  300.6s] inject-divergence: cancelled stop FP-00005 on PF_XBTUSD (S17)
+[  421.5s] grace: I5 on PF_SOLUSD excused for 75s (S18 sets leverage to 3x on purpose)
+[  421.5s] inject-divergence: set PF_SOLUSD leverage to 3x (S18)
+[  722.1s] kill: SIGKILLed bot; 10 orders resting
+[  730.1s] bot: started pid=58560
+[  730.1s] restart: bot restarted; recovery will run
+[  782.0s] post-restart: order count unchanged at 10
+[  902.3s] inject-divergence: opened a manual 1.0 SOL position (S19)
+[  961.6s] inject: S11-orphan-symbol (message 11)
+[ 1081.1s] inject: S15-partial (message 12)
+[ 1320.3s] inject: S16-close-eth (message 13)
+[ 1500.7s] inject: S16-close-all (message 14)
 
 ======================================================================
 VERDICT: PASS
+protection latency   : max 0.8s (SLA 15s, 2 samples)
 checks verified      : 85/85
 violations           : 0
 unexplained repairs  : none

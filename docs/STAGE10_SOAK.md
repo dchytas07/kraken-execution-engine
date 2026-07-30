@@ -157,3 +157,45 @@ Two I7 violations and one real bug.
 * **Orphan visibility:** re-logged every cycle. Now loud on first sight and on
   change, a reminder every 5th cycle, plus a standing unresolved-findings count
   every cycle so it cannot go silent.
+
+### Runs 2, 3, 5 — INVALID (harness defects, not bot defects)
+
+* **Run 2** — the checker was blind. Invariant-check failures were caught,
+  logged and ignored, so it reported "0 violations" while 49 checks had failed
+  to read the exchange. Fixed: an unverifiable cycle is a violation, and a run
+  under 95% coverage fails outright.
+* **Run 3** — a zombie bot from run 2 (whose orchestrator crashed before its
+  SIGTERM) was still managing run 2's positions in the shared paper account.
+  164 violations, all correct reports of a dirty rig. Fixed: `atexit` reap,
+  stray-process kill at startup, and refuse to start unless the account reads
+  0 positions and 0 orders.
+* **Run 4** — VALID, FAILED. Found the real protection-latency gap
+  (PF_ETHUSD unprotected ~12s). Led to `protection_sweep` and the SLA.
+* **Run 5** — reported PASS, rejected. The protection-SLA check took zero
+  samples because it parsed logs for an event only written to the database, so
+  the criterion the run existed to verify contributed nothing. Fixed: read the
+  DB, and treat an unmeasured SLA as a failure.
+
+### Run 6 — 2026-07-30 — **PASS**
+
+Every stated criterion executed.
+
+| Criterion | Result |
+|---|---|
+| Coverage | **85/85** checks verified |
+| Invariant violations (I1–I8) | **0** |
+| Protection SLA | max **0.84s** vs 15s limit (BTC 0.56s, ETH 0.84s) |
+| Unexplained repairs | **none** |
+| Duplicate orders | none; post-restart order count unchanged at 10 |
+| Refused signals placing orders | none |
+| Refusal reasons | all 9 as specified |
+| Unhandled exceptions | none |
+| Test suite after the soak | 649 passed |
+
+Final state: both real trades `CLOSED`; the only remaining position is the
+deliberately injected orphan `PF_SOLUSD 1.0`, correctly never auto-closed.
+
+Crash recovery: `SIGKILL` at t=722s with 10 orders resting; after restart the
+order count was unchanged at 10 — no duplicates, protection intact.
+
+Report: `docs/stage10_run6_report.json`.
