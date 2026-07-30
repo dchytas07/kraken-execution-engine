@@ -414,6 +414,85 @@ def test_recovery_reasserts_leaked_leverage(session):
     restarted.store.close()
 
 
+def test_recovery_refuses_leverage_reassert_when_margin_already_thin(session):
+    """KRAKEN_NOTES 1C: live set-leverage measurably re-margins an open
+    position, so recovery must not mutate leverage blind when margin is
+    already thin — exactly the moment a crash is likely to leave it."""
+    new_trade(session)
+    session.exchange.leverage["PF_XBTUSD"] = D(3)  # leaked by the crash
+    session.exchange.available = D(10)  # below TRADE_MARGIN_USD=30
+
+    restarted = session.crash()
+    result = restarted.recovery.recover()
+
+    assert restarted.exchange.leverage["PF_XBTUSD"] == D(3), (
+        "leverage must be left untouched when margin is already too thin to "
+        "risk the mutation"
+    )
+    assert not result.safe_to_trade
+    assert "thin" in result.blocking_reason
+    restarted.store.close()
+
+
+def test_recovery_reassert_logs_before_after_margin(session, caplog):
+    """Every actual re-assertion must log available margin before/after —
+    the mutation is not free in live, so it must never be silent."""
+    new_trade(session)
+    session.exchange.leverage["PF_XBTUSD"] = D(3)  # leaked by the crash
+    session.exchange.available = D(500)
+
+    restarted = session.crash()
+    with caplog.at_level(logging.WARNING):
+        restarted.recovery.recover()
+
+    assert restarted.exchange.leverage["PF_XBTUSD"] == D(10)
+    records = [
+        r for r in caplog.records
+        if getattr(r, "action", None) == "recovery_leverage"
+    ]
+    assert records, "expected a recovery_leverage log record"
+    assert records[0].available_margin_before == "500"
+    assert records[0].available_margin_after == "500"
+    restarted.store.close()
+
+
+class MarginCostingExchange(FakeExchange):
+    """A FakeExchange whose set_leverage_preference also consumes margin —
+    models the live finding that the mutation itself is not free, so tests
+    can exercise the post-mutation escalation path without a real account."""
+
+    def __init__(self, *, margin_cost, **kw):
+        super().__init__(**kw)
+        self._margin_cost = margin_cost
+
+    def set_leverage_preference(self, symbol, leverage):
+        result = super().set_leverage_preference(symbol, leverage)
+        self.available -= self._margin_cost
+        return result
+
+
+def test_recovery_blocks_gate_when_reassert_leaves_margin_thin(tmp_path):
+    """Margin was fine going in, but the mutation itself — whose cost cannot
+    be known in advance — leaves it thin. Recovery must not stay quiet about
+    that; the gate must close rather than let trading resume unaware."""
+    exchange = MarginCostingExchange(mark=D(63800), margin_cost=D(480))
+    exchange.available = D(500)  # above the $30 floor going in
+    session = Session(tmp_path, exchange)
+    new_trade(session)
+    session.exchange.leverage["PF_XBTUSD"] = D(3)  # leaked by the crash
+
+    restarted = session.crash()
+    result = restarted.recovery.recover()
+
+    assert restarted.exchange.leverage["PF_XBTUSD"] == D(10), (
+        "the mutation itself still happens — margin can only be checked "
+        "before (on prior headroom) and after (on the observed result)"
+    )
+    assert not result.safe_to_trade
+    assert "below one trade's margin" in result.blocking_reason
+    restarted.store.close()
+
+
 # ==========================================================================
 # Orphans and idempotency
 # ==========================================================================

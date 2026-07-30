@@ -350,6 +350,114 @@ def test_matching_leverage_is_not_flagged(rig):
     assert DiscrepancyKind.LEVERAGE_DRIFT not in kinds(rec.run_once())
 
 
+def test_leverage_drift_refused_when_margin_already_thin(rig, caplog):
+    """KRAKEN_NOTES 1C: live set-leverage measurably re-margins an open
+    position, so reconciliation must not mutate leverage blind when margin
+    is already thin."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_and_fill(engine, exchange, trade_id, uid)
+    protect(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(3)  # leaked from a failed order
+    exchange.available = D(10)  # below TRADE_MARGIN_USD=30
+
+    with caplog.at_level(logging.CRITICAL):
+        report = rec.run_once()
+
+    assert DiscrepancyKind.LEVERAGE_DRIFT in kinds(report)
+    assert exchange.leverage["PF_XBTUSD"] == D(3), (
+        "leverage must be left untouched when margin is already too thin"
+    )
+    drift = next(d for d in report.discrepancies
+                 if d.kind is DiscrepancyKind.LEVERAGE_DRIFT)
+    assert drift.repaired is False
+    assert any("refusing to re-assert" in r.message for r in caplog.records)
+
+
+def test_leverage_drift_reassert_logs_before_after_margin(rig, caplog):
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_and_fill(engine, exchange, trade_id, uid)
+    protect(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(3)
+    exchange.available = D(500)
+
+    with caplog.at_level(logging.WARNING):
+        rec.run_once()
+
+    assert exchange.leverage["PF_XBTUSD"] == D(10)
+    records = [r for r in caplog.records
+               if getattr(r, "action", None) == "leverage_drift"]
+    assert records, "expected a leverage_drift log record"
+    assert "$500 -> $500" in records[0].message
+
+
+class MarginCostingExchange(FakeExchange):
+    """A FakeExchange whose set_leverage_preference also consumes margin —
+    models the live finding that the mutation itself is not free, so tests
+    can exercise the post-mutation escalation path without a real account."""
+
+    def __init__(self, *, margin_cost, **kw):
+        super().__init__(**kw)
+        self._margin_cost = margin_cost
+
+    def set_leverage_preference(self, symbol, leverage):
+        result = super().set_leverage_preference(symbol, leverage)
+        self.available -= self._margin_cost
+        return result
+
+
+def test_leverage_drift_escalates_when_reassert_leaves_margin_thin(tmp_path, caplog):
+    """Margin was fine going in, but the mutation itself — whose cost cannot
+    be known in advance — leaves it thin. Reconciliation must not stay quiet
+    about that."""
+    config = load_config({
+        "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
+        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
+        "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
+    }, dotenv_path=None)
+    store = Store(tmp_path / "r.db")
+    exchange = MarginCostingExchange(mark=D(63800), margin_cost=D(480))
+    exchange.available = D(500)  # above the $30 floor going in
+    engine = ExecutionEngine(
+        config=config, store=store, client=exchange,
+        observer=PollingFillObserver(exchange, sleep=lambda s: None,
+                                     default_timeout_s=0.05, default_poll_s=0.0),
+        kill_switch=KillSwitch(path=tmp_path / "KILL"),
+    )
+    rec = Reconciler(config=config, store=store, client=exchange,
+                     engine=engine, specs=SPECS)
+    engine.mark_recovery_complete()
+    msg = store.record_message(channel_id=-1, message_id=1, raw_text="BTC LONG")
+    trade_id, uid = store.create_trade(
+        origin_message_row_id=msg, origin_channel_id=-1, origin_message_id=1,
+        asset="BTC", symbol="PF_XBTUSD", direction="LONG",
+        intent_stop_loss=D(62500),
+    )
+    store.transition_trade(trade_id, TradeState.PARSED)
+    store.transition_trade(trade_id, TradeState.VALIDATED)
+    open_and_fill(engine, exchange, trade_id, uid)
+    protect(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(3)  # leaked from a failed order
+    # Reset margin so the cost measured below is isolated to the
+    # reconciliation-triggered mutation, not whatever open_and_fill/protect
+    # already consumed via their own legitimate set-leverage calls.
+    exchange.available = D(500)
+
+    with caplog.at_level(logging.CRITICAL):
+        report = rec.run_once()
+
+    assert exchange.leverage["PF_XBTUSD"] == D(10), (
+        "the mutation itself still happens — margin can only be checked "
+        "before (on prior headroom) and after (on the observed result)"
+    )
+    drift = next(d for d in report.discrepancies
+                 if d.kind is DiscrepancyKind.LEVERAGE_DRIFT)
+    assert drift.repaired is True
+    assert any(
+        getattr(r, "action", None) == "leverage_drift_thin" for r in caplog.records
+    )
+
+
 # ==========================================================================
 # Clean state
 # ==========================================================================

@@ -247,8 +247,13 @@ class ExecutionEngine:
         applied in one place — enforced by
         tests/test_wiring.py::test_leverage_is_only_set_through_the_engine.
 
-        Safe to call with a position open: Study B(a) established that
-        set-leverage does not re-margin an existing position.
+        NOT free of consequence with a position open. Live measurement
+        (KRAKEN_NOTES 1C, 2026-07-30) found set-leverage on a symbol with an
+        open position leaves the position's size/price alone but measurably
+        moves the account's initialMargin/availableMargin. Both callers
+        (recovery.py, reconcile.py) check available-margin headroom before
+        calling this and log the before/after numbers — this method does not
+        re-check, so call it only through those gated paths.
         """
         return self.client.set_leverage_preference(symbol, self.config.max_leverage)
 

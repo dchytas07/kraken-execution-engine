@@ -257,7 +257,15 @@ managed and closes still work.
    API-verified (`KRAKEN_NOTES.md` §1.6).
 2. **Live `open-orders` returning `stopPrice`** — paper omits it, so stop
    trigger-price verification is unproven live (§4.2).
-3. **Study B on live** — leverage semantics confirmed in paper only (§1C).
+3. ~~Study B on live~~ — **resolved 2026-07-30, with a real finding.** B(a)
+   was live-tested against a real position and diverges from paper: paper
+   showed set-leverage as a no-op on an open position, live showed it
+   measurably increases the account's initialMargin and cuts available
+   margin, even though it leaves the position's size/price and
+   maintenanceMargin alone. Both re-assertion call sites (recovery.py,
+   reconcile.py) are now margin-gated as a result — see §1C. B(b) stays
+   paper-verified only by deliberate operator decision, not a blocker: the
+   code's read-verify-mutate-verify pattern doesn't depend on it.
 4. **Minimum order size** — doc-verified as one increment; never seen rejected.
 5. **WebSocket fill stream** — auth-only, no paper equivalent, so it is
    unverified. Mitigated by design: it only *wakes* the reconciler and never

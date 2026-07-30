@@ -50,6 +50,7 @@ from .models import (
     OrderStatus,
     TradeState,
 )
+from .sizing import SizingError, check_sufficient_margin
 
 log = get_logger(__name__)
 
@@ -608,18 +609,71 @@ class Reconciler:
         """Study B: a set-leverage that succeeded for a trade which never
         happened silently governs the NEXT position on that symbol.
 
-        Safe to re-assert because Study B(a) showed set-leverage does not
-        re-margin an open position.
+        NOT a no-op on an open position. Live measurement (KRAKEN_NOTES 1C,
+        2026-07-30) found set-leverage on a symbol with an open position
+        leaves the position's size/price alone but immediately moves the
+        account's initialMargin/availableMargin — a real mutation. Margin-
+        gated the same way recovery's re-assertion is: refuse if headroom is
+        already below one trade's margin, and log before/after on every
+        actual mutation so this cannot happen silently.
         """
         for symbol in self._symbols:
             actual = snapshot.leverage.get(symbol)
             if actual is None or actual == self.config.max_leverage:
                 continue
+
+            before = self.client.get_account_state()
+            try:
+                check_sufficient_margin(
+                    self.config.trade_margin_usd, before.available_margin
+                )
+            except SizingError as exc:
+                repaired, detail = (
+                    False,
+                    f"refused — available margin ${before.available_margin} "
+                    f"already thin: {exc}",
+                )
+                log.critical(
+                    f"leverage drift on {symbol}: refusing to re-assert — "
+                    f"available margin (${before.available_margin}) is already "
+                    "below one trade's margin, and set-leverage measurably "
+                    "reduces it on a live position (KRAKEN_NOTES 1C)",
+                    extra={
+                        "symbol": symbol,
+                        "action": "leverage_drift_refused",
+                        "available_margin": str(before.available_margin),
+                    },
+                )
+                report.discrepancies.append(
+                    Discrepancy(
+                        DiscrepancyKind.LEVERAGE_DRIFT,
+                        f"{symbol} at {actual}x, expected {self.config.max_leverage}x",
+                        symbol=symbol, repaired=repaired, repair_detail=detail,
+                    )
+                )
+                continue
+
             try:
                 # Through the engine, never direct: leverage mutation is
                 # funnelled so the cap lives in one place (docs/PLAN.md 10.1).
                 self.engine.reassert_leverage(symbol)
-                repaired, detail = True, f"re-asserted {self.config.max_leverage}x"
+                after = self.client.get_account_state()
+                repaired, detail = (
+                    True,
+                    f"re-asserted {self.config.max_leverage}x — available margin "
+                    f"${before.available_margin} -> ${after.available_margin}",
+                )
+                if after.available_margin < self.config.trade_margin_usd:
+                    log.critical(
+                        f"leverage drift on {symbol}: re-assertion pushed "
+                        f"available margin down to ${after.available_margin} — "
+                        "operator review needed",
+                        extra={
+                            "symbol": symbol,
+                            "action": "leverage_drift_thin",
+                            "available_margin_after": str(after.available_margin),
+                        },
+                    )
             except ExchangeError as exc:
                 repaired, detail = False, f"re-assert failed: {exc}"
             log.warning(

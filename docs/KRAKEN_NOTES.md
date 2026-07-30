@@ -428,26 +428,46 @@ which failure mode produced the drift. Left as paper-verified only.
 - Recovery (Stage 8) re-asserts leverage for all whitelisted symbols before
   permitting any order — a crash between `set-leverage` and the order is
   exactly case (b).
-- **Correction from the original paper-only version of this section:** that
-  bullet used to end "Safe to do because of B(a)" — i.e. re-asserting leverage
-  during recovery was framed as risk-free because it supposedly couldn't touch
-  an open position's margin. The live B(a) result above shows that framing was
-  wrong: re-asserting leverage on a symbol that already has an open position
+- **Correction from the original paper-only version of this section, now
+  implemented as a guard, not just a note.** That bullet used to end "Safe to
+  do because of B(a)" — i.e. re-asserting leverage during recovery was framed
+  as risk-free because it supposedly couldn't touch an open position's
+  margin. The live B(a) result above shows that framing was wrong:
+  re-asserting leverage on a symbol that already has an open position
   **does** move that account's margin requirements immediately. It is still
   the correct design — a crash mid-sequence must have its leverage
-  re-asserted before any new order, and nothing here suggests recovery should
-  skip that — but it is not the zero-consequence operation this section
-  previously claimed. Recovery re-asserting leverage against a symbol that
-  already has a live position (e.g. after a crash, or the pre-existing manual
-  positions from §1.8) will change that account's available margin, not just
-  govern some hypothetical future order.
+  re-asserted before any new order — but it is not the zero-consequence
+  operation this section previously claimed, so both call sites are now
+  margin-gated:
+  - Before mutating, both `RecoveryManager.recover()`
+    ([recovery.py:140](../src/bot/recovery.py)) and
+    `Reconciler._check_leverage_drift()`
+    ([reconcile.py:607](../src/bot/reconcile.py)) read `get_account_state()`
+    and refuse the mutation — logging CRITICAL and blocking the trading gate
+    (recovery) or marking the discrepancy unrepaired (reconciliation) — if
+    available margin is already below one trade's margin
+    (`config.trade_margin_usd`). The mutation's exact cost can't be predicted
+    in advance (Kraken exposes no dry-run for it), so this checks the one
+    thing that *can* be known ahead of time: existing headroom.
+  - Every actual mutation logs available margin before and after at WARNING,
+    so the effect is never silent, matching what the live test above showed.
+  - If the mutation itself (whose cost wasn't knowable beforehand) leaves
+    available margin below that same floor, it's logged CRITICAL and the
+    trading gate is blocked / the discrepancy is left flagged for operator
+    review, even though the mutation already succeeded — it can't be undone
+    automatically without another mutation of unknown cost.
+  - Covered by six new tests: refusal-when-thin and before/after-margin
+    logging in both `tests/test_recovery.py` and `tests/test_reconcile.py`,
+    plus a `MarginCostingExchange` fake in each that simulates the live
+    finding to exercise the post-mutation escalation path.
 
 ### Caveat
 
 B(a) is now API-verified on both paper and live, with the live result
-correcting part of the paper-only conclusion (above). B(b) remains
-paper-verified only, by deliberate operator choice rather than a blocked
-credential — see above. Closed in §5.
+correcting part of the paper-only conclusion (above) and driving a real code
+change (the margin-headroom guard, above). B(b) remains paper-verified only,
+by deliberate operator choice rather than a blocked credential — see above.
+Closed in §5.
 
 ---
 
@@ -603,13 +623,24 @@ guard on `KrakenCliAdapter`.
 
 ## 5. Still outstanding before live
 
+**Nothing here blocks live trading.** One item remains, and it's optional:
+
 | Item | Blocked on | Section |
 |---|---|---|
-| Withdrawal tests A–C (spot key scope combinations) | operator creating 3 differently-scoped spot test keys | §1.6 |
+| Withdrawal tests A–C (spot key scope combinations) | 3 purpose-built spot API keys the operator doesn't currently have, each needing a specific permission combination (Query+Withdraw / Query-only / Withdraw-only) | §1.6 |
 
-That's the only item left. Everything else that was outstanding is now closed
-(below), including Study B — B(a) live-confirmed with a real finding, B(b)
-closed as paper-only by deliberate operator decision rather than a blocker.
+These exist to validate the *shape* of the withdrawal-scope check itself
+(that a denial is correctly treated as `NOT_VERIFIABLE` rather than `PASS`,
+etc. — §1.2). They don't gate anything: the futures key actually used for
+trading is covered by the attestation gate (§1.5, confirmed live in §1.7),
+and no spot key is used for trading at all (§1.3). Run them only if/when it's
+worth provisioning three disposable spot keys to pressure-test the check's
+own logic — not before then.
+
+Everything else that was outstanding is now closed (below), including Study
+B — B(a) live-confirmed with a real finding that changed the code (a
+margin-headroom guard, §1C), B(b) closed as paper-only by deliberate
+operator decision rather than a blocker.
 
 **Standing note, not a task:** the account still holds 4 pre-existing live
 positions from outside this bot (§1.8), including one on PF_XAUTUSD. This

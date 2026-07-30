@@ -49,6 +49,7 @@ from .execution.engine import ExecutionEngine
 from .logging_setup import get_logger
 from .models import EventType, OrderPurpose, OrderStatus, TradeState
 from .reconcile import ExchangeSnapshot, Reconciler
+from .sizing import SizingError, check_sufficient_margin
 
 log = get_logger(__name__)
 
@@ -136,17 +137,76 @@ class RecoveryManager:
 
         # 3. Re-assert leverage. Study B(b): a crash between set-leverage and
         #    the order leaves a preference that would govern the next position.
-        #    Safe with positions open — Study B(a).
+        #
+        #    NOT a no-op on an open position. Live measurement (KRAKEN_NOTES
+        #    1C, 2026-07-30) found set-leverage on a symbol with an open
+        #    position leaves the position's size/price alone but immediately
+        #    moves the account's initialMargin — a real mutation, not a safe
+        #    formality. Right after a crash is exactly when margin might
+        #    already be thin, so this is margin-gated: refuse the mutation
+        #    if headroom is already below one trade's margin, and if the
+        #    mutation itself (whose cost cannot be known beforehand) leaves
+        #    headroom thin afterward, block the gate rather than stay quiet
+        #    about it. Before/after margin is logged on every reassertion
+        #    regardless of outcome.
         for symbol in self._symbols:
             actual = snapshot.leverage.get(symbol)
             if actual is not None and actual != self.config.max_leverage:
+                before = self.client.get_account_state()
+                try:
+                    check_sufficient_margin(
+                        self.config.trade_margin_usd, before.available_margin
+                    )
+                except SizingError as exc:
+                    result.blocking_reason = (
+                        f"refused to re-assert leverage on {symbol}: available "
+                        f"margin is already thin (${before.available_margin}): {exc}"
+                    )
+                    log.critical(
+                        f"RECOVERY BLOCKED: refusing to re-assert leverage on "
+                        f"{symbol} — available margin (${before.available_margin}) "
+                        "is already below one trade's margin, and set-leverage "
+                        "measurably reduces it on a live position (KRAKEN_NOTES "
+                        "1C); not risking a margin call during recovery",
+                        extra={
+                            "symbol": symbol,
+                            "action": "recovery_leverage_refused",
+                            "available_margin": str(before.available_margin),
+                        },
+                    )
+                    continue
+
                 try:
                     self.engine.reassert_leverage(symbol)
+                    after = self.client.get_account_state()
                     log.warning(
                         f"recovery re-asserted leverage on {symbol}: {actual}x -> "
-                        f"{self.config.max_leverage}x",
-                        extra={"symbol": symbol, "action": "recovery_leverage"},
+                        f"{self.config.max_leverage}x — available margin "
+                        f"${before.available_margin} -> ${after.available_margin}",
+                        extra={
+                            "symbol": symbol,
+                            "action": "recovery_leverage",
+                            "available_margin_before": str(before.available_margin),
+                            "available_margin_after": str(after.available_margin),
+                        },
                     )
+                    if after.available_margin < self.config.trade_margin_usd:
+                        result.blocking_reason = (
+                            f"leverage re-assertion on {symbol} left available "
+                            f"margin (${after.available_margin}) below one "
+                            f"trade's margin (${self.config.trade_margin_usd})"
+                        )
+                        log.critical(
+                            f"RECOVERY BLOCKED: re-asserting leverage on {symbol} "
+                            f"pushed available margin down to "
+                            f"${after.available_margin} — refusing to permit "
+                            "trading until an operator reviews the account",
+                            extra={
+                                "symbol": symbol,
+                                "action": "recovery_leverage_thin",
+                                "available_margin_after": str(after.available_margin),
+                            },
+                        )
                 except ExchangeError as exc:
                     result.blocking_reason = (
                         f"could not re-assert leverage on {symbol}: {exc}"
