@@ -352,23 +352,49 @@ Raw series: `tests/fixtures/study_a_xaut_gold.json`.
 
 ## 1C. Study B — leverage state semantics
 
-Status: **API-VERIFIED** (paper engine), 2026-07-29. Both questions answered.
+Status: **API-VERIFIED.** B(a): paper (2026-07-29) **and live (2026-07-30,
+with a real divergence found)**. B(b): paper only, **live intentionally not
+attempted** — see below.
 
 ### B(a) — does `set-leverage` affect an already-open position?
 
-**No.** Opened 0.0046 PF_XBTUSD at 10x (liq 59,285.72), then set leverage to
-5x. The position was unchanged: still `leverage: 10.0`, liq still 59,285.72.
+**Paper, 2026-07-29: No.** Opened 0.0046 PF_XBTUSD at 10x (liq 59,285.72),
+then set leverage to 5x. The position was unchanged: still `leverage: 10.0`,
+liq still 59,285.72. An add-on order to the *existing* position also retained
+the position's original 10x.
 
-An add-on order to the *existing* position also retained the position's
-original 10x. So a position's leverage is fixed at open time.
+**Live, 2026-07-30: partially contradicts the paper finding.** Tested against
+one of the operator's real pre-existing positions (PF_ETHUSD short, 0.079 @
+1897.4, opened outside this bot — §1.8), chosen as the smallest by notional.
+Sequence, on the live `flex` (multi-collateral) account:
 
-**Consequence:** `set-leverage` is safe to call while a position is open — it
-cannot silently re-margin live risk. Good news; it means leverage can be
-re-asserted freely during recovery and reconciliation.
+| | initialMargin | initialMarginWithOrders | maintenanceMargin | availableMargin | PF_ETHUSD position |
+|---|---|---|---|---|---|
+| Baseline | $90.00 | $151.35 | $45.00 | $141.50 | size 0.079, price 1897.4, no leverage field |
+| After `set-leverage PF_ETHUSD 5` | **$104.99** | **$181.81** | $45.00 (unchanged) | **$112.64** | size 0.079, price 1897.4 (unchanged) — but now carries `maxFixedLeverage: 5.0` |
+| After revert (`set-leverage PF_ETHUSD`, no value) | $90.00 | $151.35 | $45.00 | ~$141.83* | size 0.079, price 1897.4, leverage field gone again |
+
+\* small residual difference from baseline is ordinary PnL/funding drift over
+the ~1 minute elapsed, not a margin-state effect — `leveragePreferences` read
+back empty, matching the pre-test baseline exactly.
+
+**What did and didn't change:** the position itself — size, entry price, side
+— was untouched at every step, and `maintenanceMargin` (the figure closest to
+actual liquidation risk) never moved. **But `set-leverage` on a symbol with an
+open position immediately attached a `maxFixedLeverage` field to that position
+and increased the account's `initialMargin`/`initialMarginWithOrders` by
+~$15/$30, cutting `availableMargin` by ~$29** — live re-margined the position
+on the spot. Paper's "the position was unchanged" finding described the
+position's own leverage/liq fields correctly, but doesn't generalize to "the
+account's margin state is unaffected" — on live, it clearly is affected.
+
+Nothing dangerous happened in this test — the account had ample equity headroom
+and no maintenance-margin/liquidation risk emerged — but a `set-leverage` call
+against a position is **not the no-op live that it is in paper.**
 
 ### B(b) — does leverage persist after the following order fails?
 
-**Yes — confirmed state leak.** Sequence:
+**Paper, 2026-07-29: Yes — confirmed state leak.** Sequence:
 
 1. `set-leverage PF_XBTUSD 3` → succeeded.
 2. Next order call failed.
@@ -380,6 +406,14 @@ re-asserted freely during recovery and reconciliation.
 A `set-leverage` that succeeded for a trade which never happened silently
 governed the *next* signal on that symbol. Margin and liquidation distance
 were both wrong relative to intent, with nothing in local state recording it.
+
+**Live: intentionally not attempted, 2026-07-30.** Confirming this live would
+require deliberately causing a real order to fail and then opening a real new
+position on a funded account to see whether it inherits the stale leverage —
+both are live trades. The operator chose not to place either, on the grounds
+that the code's mitigation (below) doesn't depend on B(b) matching live to
+remain safe — it treats leverage as untrusted on every cycle regardless of
+which failure mode produced the drift. Left as paper-verified only.
 
 ### Consequences for the design
 
@@ -393,13 +427,27 @@ were both wrong relative to intent, with nothing in local state recording it.
   intent and flags drift.
 - Recovery (Stage 8) re-asserts leverage for all whitelisted symbols before
   permitting any order — a crash between `set-leverage` and the order is
-  exactly case (b). Safe to do because of B(a).
+  exactly case (b).
+- **Correction from the original paper-only version of this section:** that
+  bullet used to end "Safe to do because of B(a)" — i.e. re-asserting leverage
+  during recovery was framed as risk-free because it supposedly couldn't touch
+  an open position's margin. The live B(a) result above shows that framing was
+  wrong: re-asserting leverage on a symbol that already has an open position
+  **does** move that account's margin requirements immediately. It is still
+  the correct design — a crash mid-sequence must have its leverage
+  re-asserted before any new order, and nothing here suggests recovery should
+  skip that — but it is not the zero-consequence operation this section
+  previously claimed. Recovery re-asserting leverage against a symbol that
+  already has a live position (e.g. after a crash, or the pre-existing manual
+  positions from §1.8) will change that account's available margin, not just
+  govern some hypothetical future order.
 
 ### Caveat
 
-Measured on the paper engine. Kraken documents the same per-symbol preference
-model for live, and paper reproduced the documented behaviour, but B(a)/B(b)
-should be re-confirmed once live credentials exist. Recorded in §5.
+B(a) is now API-verified on both paper and live, with the live result
+correcting part of the paper-only conclusion (above). B(b) remains
+paper-verified only, by deliberate operator choice rather than a blocked
+credential — see above. Closed in §5.
 
 ---
 
@@ -558,17 +606,16 @@ guard on `KrakenCliAdapter`.
 | Item | Blocked on | Section |
 |---|---|---|
 | Withdrawal tests A–C (spot key scope combinations) | operator creating 3 differently-scoped spot test keys | §1.6 |
-| Re-confirm Study B on live (leverage state semantics) | deliberately paused — see below | §1C |
-| **Account is not flat** — 4 pre-existing live positions found, incl. one on the pinned-disabled XAUTUSD | operator reconciling/closing outside this bot | §1.8 |
 
-Study B was **not attempted** this pass. B(a)/B(b) as originally scoped need
-`set-leverage` calls and, for full B(b) re-confirmation, a deliberately failed
-order — live mutations, not reads. The first authenticated read of this
-account (§1.8) turned up four pre-existing real positions and real capital at
-risk that this session didn't expect and didn't put there. Given that, running
-even a documented-safe mutation (§1C's own B(a) finding says `set-leverage`
-doesn't touch an open position) without checking in first seemed like the
-wrong call. Deferred pending explicit go-ahead.
+That's the only item left. Everything else that was outstanding is now closed
+(below), including Study B — B(a) live-confirmed with a real finding, B(b)
+closed as paper-only by deliberate operator decision rather than a blocker.
+
+**Standing note, not a task:** the account still holds 4 pre-existing live
+positions from outside this bot (§1.8), including one on PF_XAUTUSD. This
+isn't something to "close" — it's a fact about current account state, and it
+will still be true whenever `TRADING_MODE=live` is eventually set. Re-check
+`kraken futures positions` at that time rather than trusting this snapshot.
 
 Closed since first written:
 - ~~Real minimum order size / min notional~~ — resolved from contract
@@ -584,6 +631,17 @@ Closed since first written:
   every stop/take_profit order. §4.2
 - ~~WebSocket fill stream auth~~ — confirmed live: authenticates, returns a
   well-formed `fills_snapshot` feed. §7.4
+- ~~Re-confirm Study B on live~~ — B(a) live-tested 2026-07-30 against a real
+  position (§1C): the position itself was untouched, but live's margin
+  behaviour genuinely diverges from what paper showed — `set-leverage`
+  measurably re-margins an open position's account requirements, which paper
+  did not reveal. The design's mitigation doesn't depend on B(a) being a
+  no-op, but the doc's old "safe because of B(a)" framing was corrected. B(b)
+  closed as paper-only by deliberate operator decision — live confirmation
+  would require placing real trades, which was declined; the code's
+  read-verify-mutate-verify pattern treats leverage as untrusted every cycle
+  regardless of which failure mode produced the drift, so it doesn't depend on
+  B(b) matching live to remain safe.
 
 ---
 
