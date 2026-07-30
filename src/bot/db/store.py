@@ -606,7 +606,16 @@ class Store:
         message_row_id: int | None = None,
         severity: str = "INFO",
         detail: dict[str, Any] | None = None,
+        occurred_at: str | None = None,
     ) -> int:
+        """Append one audit row.
+
+        `occurred_at` defaults to now. Callers that work from an injected
+        clock MUST pass it: an event used as a cadence marker and stamped
+        with a different clock than the one comparing against it will
+        misfire (that is a real bug this had — see
+        alerting.send_unresolved_digest).
+        """
         with self.transaction() as conn:
             cur = conn.execute(
                 """INSERT INTO events
@@ -614,7 +623,7 @@ class Store:
                     severity, summary, detail_json)
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (
-                    _now(),
+                    occurred_at or _now(),
                     event_type.value,
                     trade_id,
                     order_id,

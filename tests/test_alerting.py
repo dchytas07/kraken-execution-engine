@@ -255,3 +255,22 @@ def test_digest_never_raises_when_the_store_is_broken(caplog):
 
     assert result is False
     assert any("digest failed" in r.message for r in caplog.records)
+
+
+def test_injected_clock_is_used_for_the_cadence_marker_too(store, sent):
+    """Found by a live demo send, not by the suite.
+
+    `now` is injectable, but the ALERT_DIGEST marker was stamped with the
+    store's real clock. Passing a `now` in the future therefore wrote a
+    marker in the past, so the very next call saw the window as elapsed and
+    sent a duplicate. The injected clock must govern both, or it only half
+    works — and the caller gets two messages.
+    """
+    quarantine(store, TradeState.SAFE_ERROR)
+    now = datetime.now(UTC) + timedelta(days=2, hours=7)
+
+    assert send_unresolved_digest(store, "TOKEN", "CHAT", now=now) is True
+    assert send_unresolved_digest(store, "TOKEN", "CHAT", now=now) is False, (
+        "duplicate digest: the marker did not use the injected clock"
+    )
+    assert len(sent) == 1

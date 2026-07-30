@@ -150,7 +150,9 @@ def send_unresolved_digest(
         rows = store.trades_in_states(UNRESOLVED_STATES)
         if not rows:
             store.append_event(
-                EventType.ALERT_DIGEST, "digest skipped: nothing unresolved"
+                EventType.ALERT_DIGEST,
+                "digest skipped: nothing unresolved",
+                occurred_at=now.isoformat(),
             )
             return False
 
@@ -175,6 +177,7 @@ def send_unresolved_digest(
             EventType.ALERT_DIGEST,
             f"digest sent: {len(rows)} unresolved",
             detail={"unresolved": len(rows)},
+            occurred_at=now.isoformat(),
         )
         return True
     except Exception as exc:  # noqa: BLE001 — alerting must never crash the bot
