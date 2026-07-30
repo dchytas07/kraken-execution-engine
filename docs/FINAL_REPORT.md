@@ -342,6 +342,20 @@ managed and closes still work.
    inside the same transaction as the state change, so the audit trail cannot
    disagree with the state it describes.
 
+   **Verified end-to-end 2026-07-30**, same as the per-transition alert: real
+   digests were sent from a scratch database to the operator's Telegram and
+   confirmed received, with correct formatting and ages. The live run also
+   caught a bug the test suite could not: `now` is injectable, but the
+   `ALERT_DIGEST` marker was stamped with the store's clock, so a caller
+   passing `now` got duplicate sends. Two tests were green over it — one used
+   the default clock on both calls, the other advanced the clock and expected
+   a re-send, which is indistinguishable from the bug. Fixed by giving
+   `append_event` an `occurred_at` override; re-verified live afterwards
+   (send, suppressed re-send, then a correct re-send at +25h). Worth
+   recording as a pattern: this is the fourth time in this project that
+   exercising a path for real found something green tests had missed, after
+   the three invalidated soak runs.
+
    Everything else about observability here still holds: no dashboard,
    logs/DB/test_inject remain the surface for anything short of these two
    states.
