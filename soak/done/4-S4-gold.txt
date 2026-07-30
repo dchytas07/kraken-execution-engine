@@ -1,8 +1,0 @@
-GOLD LONG
-Entry: 4000 - 3990
-TP1: 4010
-TP2: 4020
-TP3: 4030
-TP4: 4040
-SL: 3960
-Leverage: 50x

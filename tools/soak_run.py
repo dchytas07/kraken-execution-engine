@@ -323,10 +323,13 @@ def main() -> int:
     if reset.returncode != 0 or '"error"' in reset.stdout:
         raise SystemExit(f"REFUSING TO START: paper reset failed: "
                          f"{reset.stdout}{reset.stderr}")
+    # `reset` already re-initialises with the starting balance, so `init` is
+    # only needed on a never-initialised account and reports "already
+    # initialized" otherwise. That specific message is success, not failure.
     init = subprocess.run(
         ["kraken", "futures", "paper", "init", "--balance", "10000", "-o", "json"],
         capture_output=True, text=True)
-    if init.returncode != 0 or '"error"' in init.stdout:
+    if '"error"' in init.stdout and "already initialized" not in init.stdout:
         raise SystemExit(f"REFUSING TO START: paper init failed: "
                          f"{init.stdout}{init.stderr}")
 
