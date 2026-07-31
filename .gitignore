@@ -20,3 +20,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Raw dump of fetched channel messages (regenerable; keeps the repo free of
+# bulk third-party channel content).
+.review_cache.json
