@@ -32,6 +32,50 @@ from .sizing import SizingError
 log = get_logger(__name__)
 
 
+def _log_observation(parsed, raw_text: str) -> None:
+    """Emit a readable per-message block: raw text, parse, then decision.
+
+    Operator-facing only — nothing here affects control flow. Exists because
+    "message 123 handled: accepted=False" tells you a signal was refused but
+    not what it parsed as or why, which is precisely what you need when
+    watching a live channel to judge whether the parser is right.
+    """
+    # Blank lines are dropped: this channel separates every field with one,
+    # so keeping them would burn the display budget and truncate the stop
+    # loss and leverage — the two fields you most need to eyeball.
+    lines = [ln for ln in (raw_text or "").strip().splitlines() if ln.strip()]
+    log.info("─" * 60, extra={"action": "observe_start"})
+    log.info("  RAW         :", extra={"action": "observe_raw"})
+    for line in lines[:14]:
+        log.info(f"    | {line}", extra={"action": "observe_raw"})
+    if len(lines) > 14:
+        log.info(f"    | … {len(lines) - 14} more line(s)",
+                 extra={"action": "observe_raw"})
+
+    log.info(
+        f"  PARSED      : {parsed.message_type.value} "
+        f"(confidence {parsed.confidence})",
+        extra={"action": "observe_parse"},
+    )
+    bits = [
+        ("asset", parsed.asset.value if parsed.asset else None),
+        ("direction", parsed.direction.value if parsed.direction else None),
+        ("entry", ", ".join(str(p) for p in parsed.entry_range) or None),
+        ("take profits", ", ".join(str(p) for p in parsed.take_profits) or None),
+        ("stop loss", str(parsed.stop_loss) if parsed.stop_loss else None),
+        ("leverage", f"{parsed.leverage}x" if parsed.leverage else None),
+        ("percentage", str(parsed.percentage) if parsed.percentage else None),
+    ]
+    for label, value in bits:
+        if value:
+            log.info(f"    {label:<13}: {value}", extra={"action": "observe_parse"})
+    for w in parsed.parse_warnings:
+        log.info(f"    note         : [{w.code}] {w.detail}",
+                 extra={"action": "observe_parse"})
+    for e in parsed.parse_errors:
+        log.warning(f"    error        : {e}", extra={"action": "observe_parse"})
+
+
 def build_admission(
     *,
     config: Config,
@@ -149,10 +193,19 @@ class SignalPipeline:
             f"parsed as {parsed.message_type.value}",
             message_row_id=row_id,
         )
+        _log_observation(parsed, text)
 
         verdict: AdmissionResult = self.admission.admit(parsed, row_id)
         if verdict.refused:
+            log.info(
+                f"  DECISION    : REFUSED — {verdict.detail}",
+                extra={"action": "observe_decision", "decision": "refused"},
+            )
             return IngestResult(False, row_id, detail=verdict.detail)
+        log.info(
+            f"  DECISION    : ADMITTED — routing as {parsed.message_type.value}",
+            extra={"action": "observe_decision", "decision": "admitted"},
+        )
 
         if parsed.message_type is MessageType.NEW_SIGNAL:
             return self._open_from_signal(parsed, row_id)

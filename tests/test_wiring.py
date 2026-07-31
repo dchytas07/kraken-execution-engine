@@ -486,6 +486,7 @@ EXCUSED_IN_CRITICAL_MODULES = {
     "_on_fill": "stream callback; wakes the loop only",
     "_log_report": "logging only",
     "_format_age": "called by send_unresolved_digest, string formatting only",
+    "_log_observation": "called by handle_message, operator logging only",
     "_log_intent": "logging only",
     "_order_verb": "command-shape helper",
     "_next_stop_sequence": "id sequencing; covered by place_stop tests",
