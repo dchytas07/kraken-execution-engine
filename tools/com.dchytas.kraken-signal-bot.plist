@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.kraken-signal-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/home/user/projects/kraken-signal-bot/tools/run_bot.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/home/user/projects/kraken-signal-bot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if it exits, but NOT if it exits 78 (EX_CONFIG), which
+         run_bot.sh uses to refuse a non-paper mode. Without SuccessfulExit
+         handling, a misconfiguration would crash-loop forever. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Minimum seconds between restarts. launchd's default is 10s, which is
+         far too eager if the bot is failing on startup (e.g. an expired
+         Telegram session): it would hammer Telegram's API and fill the log. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/home/user/projects/kraken-signal-bot/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/home/user/projects/kraken-signal-bot/logs/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

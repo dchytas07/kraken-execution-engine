@@ -10,8 +10,12 @@ rather than pretending to trade.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import os
+import signal
 import sys
+from dataclasses import dataclass
 
 from .alerting import send_alert
 from .config import Config, ConfigError, collect_secrets, load_config
@@ -20,7 +24,10 @@ from .exchange.cli import KrakenCli
 from .killswitch import KillSwitch
 from .logging_setup import get_logger, setup_logging
 from .models import EventType
+from .pipeline import SignalPipeline, build_admission
+from .runner import BotRunner
 from .safety.permissions import SafetyCheckFailed, enforce, run_permission_checks
+from .telegram.listener import TelegramListener
 
 log = get_logger("bot.main")
 
@@ -49,7 +56,26 @@ def has_spot_credentials(env: dict[str, str] | None = None) -> bool:
     )
 
 
-def startup(config: Config) -> tuple[Store, KillSwitch]:
+@dataclass(slots=True)
+class Runtime:
+    """Everything startup built. `--check` uses only store/kill_switch; the
+    run loop needs the rest, which used to be discarded as locals."""
+
+    store: Store
+    kill_switch: KillSwitch
+    adapter: object | None = None
+    specs: dict | None = None
+    engine: object | None = None
+    manager: object | None = None
+    reconciler: object | None = None
+
+    # Kept iterable so the historical `store, _ = startup(config)` unpacking
+    # in older callers and tests keeps working.
+    def __iter__(self):
+        return iter((self.store, self.kill_switch))
+
+
+def startup(config: Config) -> Runtime:
     """Run every startup gate. Raises rather than degrading silently."""
     for line in config.startup_banner():
         log.info(line, extra={"action": "startup_banner"})
@@ -141,6 +167,13 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
                 extra={"action": "startup_orphans"},
             )
 
+        runtime = Runtime(
+            store=store, kill_switch=kill_switch, adapter=adapter, specs=specs,
+            engine=engine, manager=manager, reconciler=reconciler,
+        )
+    else:
+        runtime = Runtime(store=store, kill_switch=kill_switch)
+
     store.append_event(
         EventType.SAFETY_CHECK_PASSED,
         "startup safety checks complete",
@@ -150,7 +183,110 @@ def startup(config: Config) -> tuple[Store, KillSwitch]:
             "not API-verifiable (docs/KRAKEN_NOTES.md 1.4)",
         },
     )
-    return store, kill_switch
+    return runtime
+
+
+async def run_forever(config: Config, runtime: Runtime) -> int:
+    """Watch Telegram and drive the trading loops until stopped.
+
+    Deliberately SINGLE-THREADED. Store opens one sqlite connection and
+    `transaction()` uses BEGIN IMMEDIATE across several execute() calls, so
+    running the loop and the listener on separate threads could interleave
+    two transactions on the same connection. Everything therefore shares one
+    event loop; the tradeoff is that a slow `step_all` briefly delays message
+    intake (Telethon buffers, nothing is lost). Revisit with a per-thread
+    Store if that latency ever matters.
+    """
+    if runtime.manager is None or runtime.reconciler is None:
+        log.critical(
+            f"cannot run in {config.trading_mode.value} mode: no exchange adapter",
+            extra={"action": "run_refused"},
+        )
+        return 2
+    if not (config.telegram_api_id and config.telegram_api_hash
+            and config.telegram_channel):
+        log.critical(
+            "cannot run: TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_CHANNEL "
+            "must all be set",
+            extra={"action": "run_refused"},
+        )
+        return 2
+
+    pipeline = SignalPipeline(
+        config=config, store=runtime.store,
+        admission=build_admission(
+            config=config, store=runtime.store,
+            kill_switch=runtime.kill_switch, client=runtime.adapter,
+            specs=runtime.specs,
+        ),
+        engine=runtime.engine, specs=runtime.specs, manager=runtime.manager,
+    )
+    listener = TelegramListener(
+        pipeline=pipeline,
+        api_id=config.telegram_api_id,
+        api_hash=config.telegram_api_hash,
+        channel=config.telegram_channel,
+        session_path=config.telegram_session_path,
+    )
+    runner = BotRunner(
+        manager=runtime.manager, reconciler=runtime.reconciler,
+        store=runtime.store, config=config,
+    )
+
+    stopping = asyncio.Event()
+
+    def _stop(signame: str) -> None:
+        log.info(f"received {signame}, shutting down",
+                 extra={"action": "shutdown_signal"})
+        stopping.set()
+
+    loop = asyncio.get_running_loop()
+    for signame in ("SIGTERM", "SIGINT"):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(
+                getattr(signal, signame), _stop, signame
+            )
+
+    async def drive_loops() -> None:
+        """BotRunner.tick on its own cadence, cooperatively."""
+        while not stopping.is_set():
+            try:
+                runner.tick()
+            except Exception:
+                log.error("loop tick failed", exc_info=True,
+                          extra={"action": "tick_failed"})
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    stopping.wait(), timeout=runner.intervals.sweep_seconds
+                )
+
+    log.info(
+        f"starting: mode={config.trading_mode.value} channel={config.telegram_channel}",
+        extra={"action": "run_start"},
+    )
+    loops = asyncio.create_task(drive_loops())
+    try:
+        await listener.start()
+    except Exception:
+        log.critical(
+            "telegram listener failed to start — if this says EOF reading a line, "
+            "no Telethon session exists yet; run tools/telegram_login.py once from "
+            "a real terminal to create it",
+            exc_info=True,
+            extra={"action": "telegram_start_failed"},
+        )
+        stopping.set()
+        await loops
+        runtime.store.close()
+        return 4
+
+    log.info("running; watching for signals", extra={"action": "run_ready"})
+    await stopping.wait()
+    await listener.stop()
+    await loops
+    runtime.store.close()
+    log.info("stopped cleanly", extra={"action": "run_stopped"})
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -159,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
         "--check",
         action="store_true",
         help="run startup validation and exit",
+    )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="watch the Telegram channel and drive the trading loops until stopped",
     )
     parser.add_argument(
         "--test-alert",
@@ -202,7 +343,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store, _ = startup(config)
+        runtime = startup(config)
+        store = runtime.store
     except SafetyCheckFailed as exc:
         log.critical(str(exc), extra={"action": "startup_refused"})
         return 3
@@ -215,9 +357,12 @@ def main(argv: list[str] | None = None) -> int:
         store.close()
         return 0
 
+    if args.run:
+        return asyncio.run(run_forever(config, runtime))
+
     log.info(
-        "Stage 2 skeleton only — no trading loops are wired up yet.",
-        extra={"action": "not_implemented"},
+        "nothing to do: pass --run to watch Telegram, or --check to validate only.",
+        extra={"action": "no_mode_selected"},
     )
     store.close()
     return 0

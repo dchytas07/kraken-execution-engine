@@ -67,7 +67,10 @@ def test_check_flag_is_unaffected_by_test_alert_wiring(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr(
         main_module, "startup",
-        lambda config: (ran.append(config), (_StubStore(), None))[1],
+        lambda config: (
+            ran.append(config),
+            main_module.Runtime(store=_StubStore(), kill_switch=None),
+        )[1],
     )
 
     code = main_module.main(["--check"])
