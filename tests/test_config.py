@@ -181,3 +181,39 @@ def test_short_values_are_not_treated_as_secrets():
 def test_config_repr_contains_no_credentials():
     c = cfg(KRAKEN_API_SECRET="s" * 40)
     assert "s" * 40 not in repr(c)
+
+
+# -- telegram channel identity ---------------------------------------------
+#
+# Regression: a numeric channel id read as a STRING made the bot silently
+# deaf. Telethon resolves a digits-only string as a username, which fails
+# even when the channel is cached, so events.NewMessage(chats=...) matched
+# nothing while the bot logged "running; watching for signals".
+
+
+def test_numeric_channel_id_is_an_int_not_a_string():
+    c = cfg(TELEGRAM_CHANNEL="1000000001")
+    assert c.telegram_channel == 1000000001
+    assert isinstance(c.telegram_channel, int), (
+        "Telethon cannot resolve a digits-only string; it must be an int"
+    )
+
+
+def test_marked_channel_id_keeps_its_negative_prefix():
+    c = cfg(TELEGRAM_CHANNEL="-1001000000001")
+    assert c.telegram_channel == -1001000000001
+    assert isinstance(c.telegram_channel, int)
+
+
+def test_username_channel_stays_a_string():
+    c = cfg(TELEGRAM_CHANNEL="@example_channel")
+    assert c.telegram_channel == "@example_channel"
+    assert isinstance(c.telegram_channel, str)
+
+
+def test_channel_whitespace_is_stripped():
+    assert cfg(TELEGRAM_CHANNEL="  1000000001  ").telegram_channel == 1000000001
+
+
+def test_blank_channel_is_none_not_empty_string():
+    assert cfg(TELEGRAM_CHANNEL="").telegram_channel is None

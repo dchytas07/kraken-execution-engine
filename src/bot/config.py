@@ -9,6 +9,7 @@ error, not a silent default.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -34,6 +35,9 @@ V1_GOLD_PIN_ACTIVE = True
 
 LIVE_ACK_PHRASE = "I_UNDERSTAND_THIS_IS_REAL_MONEY"
 
+# A channel id, with or without Telegram's -100 supergroup/channel prefix.
+_NUMERIC_CHANNEL = re.compile(r"-?\d+")
+
 # Assets tradeable in v1. XAU is deliberately absent while the pin holds.
 V1_TRADEABLE_ASSETS = frozenset({CanonicalAsset.BTC, CanonicalAsset.ETH, CanonicalAsset.SOL})
 
@@ -55,7 +59,9 @@ class Config:
 
     telegram_api_id: int | None
     telegram_api_hash: str | None
-    telegram_channel: str | None
+    # int for a numeric channel id, str for an @username. The distinction is
+    # load-bearing, not cosmetic — see _parse_channel.
+    telegram_channel: str | int | None
     telegram_session_path: Path
 
     alert_telegram_bot_token: str | None
@@ -156,6 +162,35 @@ def _int(env: dict[str, str], key: str, default: str | None = None) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{key}={raw!r} is not a valid integer") from exc
+
+
+def _parse_channel(raw: str | None) -> str | int | None:
+    """Coerce a numeric TELEGRAM_CHANNEL to int; leave @usernames as str.
+
+    This is not cosmetic. Telethon resolves a digits-only STRING as a
+    username via ResolveUsernameRequest, which fails with
+
+        ValueError: Cannot find any entity corresponding to "1000000001"
+
+    even when the channel is correctly cached in the session. The same id
+    passed as an INT resolves fine from cache. Measured against the live API:
+    "1000000001" and "-1001000000001" both fail; 1000000001 and
+    -1001000000001 both work, so the -100 prefix is irrelevant and the type
+    is everything.
+
+    The failure mode this prevents is worse than the backfill crash that
+    exposed it: `events.NewMessage(chats=...)` given an unresolvable value
+    matches nothing, so the bot logs "running; watching for signals" and is
+    silently deaf.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if _NUMERIC_CHANNEL.fullmatch(value):
+        return int(value)
+    return value
 
 
 def _bool(env: dict[str, str], key: str, default: bool = False) -> bool:
@@ -265,7 +300,7 @@ def load_config(
     telegram_api_id_raw = _raw(env, "TELEGRAM_API_ID")
     telegram_api_id = _int(env, "TELEGRAM_API_ID") if telegram_api_id_raw else None
     telegram_api_hash = _raw(env, "TELEGRAM_API_HASH")
-    telegram_channel = _raw(env, "TELEGRAM_CHANNEL")
+    telegram_channel = _parse_channel(_raw(env, "TELEGRAM_CHANNEL"))
 
     # -- alerting -------------------------------------------------------------
     # A separate send-only Bot API credential, distinct from the telegram_*
