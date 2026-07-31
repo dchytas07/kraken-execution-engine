@@ -176,6 +176,7 @@ async def from_telegram(limit: int) -> list[dict]:
     return out
 
 
+
 def render(records: list[dict], show_all: bool, limit_note: str,
            top: int = 25) -> str:
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -265,6 +266,82 @@ def render(records: list[dict], show_all: bool, limit_note: str,
     return "\n".join(lines)
 
 
+
+def disposition(parsed, config) -> tuple[str, str]:
+    """What the bot would do, judged from the PARSE alone.
+
+    Deliberately not called "the decision": real admission also applies
+    message idempotency, signal dedupe, symbol occupancy, unrecognised
+    exchange positions and entry staleness, none of which are knowable from
+    text. This is the subset that IS knowable, so a wrong verdict here is a
+    genuine parser bug rather than a runtime condition.
+    """
+    if not parsed.message_type.is_executable_candidate:
+        return "IGNORED", f"{parsed.message_type.value} is not an instruction type"
+    if parsed.asset is None:
+        if parsed.message_type.is_exit_like:
+            return "REFUSED", "close instruction with no resolvable target"
+        return "REFUSED", "no asset could be resolved"
+    if not config.is_tradeable(parsed.asset):
+        return "REFUSED", f"{parsed.asset.value} is not tradeable in this build"
+    return "WOULD EXECUTE", f"executable {parsed.message_type.value} on {parsed.asset.value}"
+
+
+def render_flat(records: list[dict], note: str) -> str:
+    """Every message, one at a time, oldest first. No grouping."""
+    config = load_config()
+    rows = sorted(records, key=lambda r: r["id"])
+
+    entries, tally = [], defaultdict(int)
+    for n, r in enumerate(rows, start=1):
+        # Re-parse from the cached text: the cache predates the direction
+        # field, and re-parsing is free and keeps this honest about what the
+        # CURRENT parser does rather than what it did at fetch time.
+        parsed = parse_message(channel_id=-1, message_id=r["id"], text=r["text"])
+        verdict, why = disposition(parsed, config)
+        tally[verdict] += 1
+
+        bits = [f"`{parsed.message_type.value}`", f"asset `{parsed.asset.value if parsed.asset else '-'}`"]
+        if parsed.direction:
+            bits.append(f"direction `{parsed.direction.value}`")
+        bits.append(f"confidence `{parsed.confidence}`")
+
+        body = (r["text"] or "").strip() or "<empty>"
+        entries.append("\n".join([
+            f"### {n} · msg {r['id']}",
+            "",
+            "```",
+            body,
+            "```",
+            "",
+            "- **parsed**: " + "  ·  ".join(bits),
+            f"- **decision**: **{verdict}** — {why}",
+            "- `[ ] correct`   `[ ] WRONG →` _(what it should be)_",
+            "",
+            "---",
+            "",
+        ]))
+
+    head = [
+        "# Message review — every message, one by one",
+        "",
+        f"{len(rows)} messages, oldest first (ids {rows[0]['id']}–{rows[-1]['id']}). {note}",
+        "",
+        "**decision** is judged from the parse alone: message type, asset "
+        "resolution and tradeability. Real admission additionally applies "
+        "idempotency, dedupe, symbol occupancy, unrecognised-position and "
+        "staleness checks, which text cannot predict — so a wrong verdict "
+        "here is a parser bug, not a runtime condition.",
+        "",
+        "| verdict | count |",
+        "|---|---|",
+    ]
+    for k in ("WOULD EXECUTE", "REFUSED", "IGNORED"):
+        head.append(f"| {k} | {tally.get(k, 0)} |")
+    head += ["", "---", ""]
+    return "\n".join(head) + "\n".join(entries)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="review_messages")
     ap.add_argument("--limit", type=int, default=1000,
@@ -279,6 +356,8 @@ def main() -> int:
     ap.add_argument("--cache", default=".review_cache.json")
     ap.add_argument("--top", type=int, default=25,
                     help="how many patterns to detail (default 25)")
+    ap.add_argument("--flat", action="store_true",
+                    help="list every message individually, no grouping")
     args = ap.parse_args()
 
     cache = Path(args.cache)
@@ -305,7 +384,10 @@ def main() -> int:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(records, args.all, note, top=args.top))
+    if args.flat:
+        out.write_text(render_flat(records, note))
+    else:
+        out.write_text(render(records, args.all, note, top=args.top))
     print(f"wrote {out}  ({len(records)} messages)")
     return 0
 
