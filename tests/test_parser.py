@@ -476,3 +476,43 @@ def test_identity_is_channel_and_message_id():
 def test_raw_text_is_preserved_verbatim():
     """The audit trail must hold what actually arrived."""
     assert p(SIGNAL).raw_text == SIGNAL
+
+
+# -- BNB promotion (2026-07-31) --------------------------------------------
+
+
+@pytest.mark.parametrize("alias", ["BNB/USDT", "BNB", "BNBUSDT", "Binancecoin"])
+def test_bnb_aliases_resolve(alias):
+    r = p(f"{alias} LONG entry 600 - 590 TP1 610 TP2 620 TP3 630 TP4 640 SL 580")
+    assert r.asset is CanonicalAsset.BNB
+
+
+def test_bnb_is_no_longer_reported_as_an_unsupported_asset():
+    """Regression: `bnb` used to sit in _KNOWN_OTHER_ASSETS. Leaving it in
+    both maps would make the verdict depend on lookup order."""
+    from bot.parser.aliases import resolve_asset
+    asset, unsupported = resolve_asset("long bnbusdt here")
+    assert asset is CanonicalAsset.BNB
+    assert "bnb" not in unsupported
+
+
+def test_no_token_is_both_supported_and_unsupported():
+    """The import-time guard in aliases.py, asserted explicitly so the rule
+    is visible in the suite and not only at import."""
+    from bot.parser.aliases import _KNOWN_OTHER_ASSETS, _TOKEN_TO_ASSET
+    assert set(_TOKEN_TO_ASSET) & _KNOWN_OTHER_ASSETS == set()
+
+
+def test_a_real_bnb_signal_parses_as_a_new_signal():
+    """The exact shape the channel posts — previously UNKNOWN at confidence
+    0.0 because BNB was unsupported (docs/MESSAGE_REVIEW.md)."""
+    r = parse_message(channel_id=-1, message_id=1, text=(
+        "\u27a1\ufe0f SHORT BNBUSDT\n\n\u2747\ufe0f Entry: 600.00 - 610.00\n\n"
+        "\u2611\ufe0f Target 1: 590.00\n\u2611\ufe0f Target 2: 580.00\n"
+        "\u2611\ufe0f Target 3: 570.00\n\u2611\ufe0f Target 4: 560.00\n\n"
+        "\u26d4 Stoploss: 620.00\n\n\U0001f4ab Leverage : 20x"
+    ))
+    assert r.message_type is MessageType.NEW_SIGNAL
+    assert r.asset is CanonicalAsset.BNB
+    assert r.direction is Direction.SHORT
+    assert r.confidence == 1.0

@@ -39,7 +39,16 @@ LIVE_ACK_PHRASE = "I_UNDERSTAND_THIS_IS_REAL_MONEY"
 _NUMERIC_CHANNEL = re.compile(r"-?\d+")
 
 # Assets tradeable in v1. XAU is deliberately absent while the pin holds.
-V1_TRADEABLE_ASSETS = frozenset({CanonicalAsset.BTC, CanonicalAsset.ETH, CanonicalAsset.SOL})
+V1_TRADEABLE_ASSETS = frozenset(
+    {
+        CanonicalAsset.BTC,
+        CanonicalAsset.ETH,
+        CanonicalAsset.SOL,
+        # Added 2026-07-31 after live spec verification (docs/KRAKEN_NOTES.md
+        # 2). Unlike XAU, PF_BNBUSD is a direct perpetual, not a substitute.
+        CanonicalAsset.BNB,
+    }
+)
 
 
 class ConfigError(Exception):

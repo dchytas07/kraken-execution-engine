@@ -34,6 +34,7 @@ RAW = {
 BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)   # incr 0.0001
 ETH = parse_instrument(RAW["PF_ETHUSD"], CanonicalAsset.ETH)   # incr 0.001
 SOL = parse_instrument(RAW["PF_SOLUSD"], CanonicalAsset.SOL)   # incr 0.01
+BNB = parse_instrument(RAW["PF_BNBUSD"], CanonicalAsset.BNB)   # incr 0.01
 XAUT = parse_instrument(RAW["PF_XAUTUSD"], CanonicalAsset.XAU)  # incr 0.001
 
 D = Decimal
@@ -174,7 +175,7 @@ def test_off_increment_size_rejected():
 def test_minimum_equals_one_increment():
     """KRAKEN_NOTES 4.1.1: min order size == size increment, derived from the
     API's contractValueTradePrecision rather than hardcoded."""
-    for spec in (BTC, ETH, SOL, XAUT):
+    for spec in (BTC, ETH, SOL, BNB, XAUT):
         validate_size(spec.size_increment, spec)
         with pytest.raises(SizingError, match="SIZE_BELOW_MINIMUM"):
             validate_size(spec.size_increment / 2, spec)
@@ -374,3 +375,24 @@ def test_all_outputs_are_decimal():
         assert isinstance(value, Decimal)
     for part in split_take_profits(r.size, BTC):
         assert isinstance(part, Decimal)
+
+
+# -- BNB (added 2026-07-31 after live spec verification) --------------------
+
+
+def test_bnb_sizes_against_its_real_increment():
+    """PF_BNBUSD has a 0.01 increment; a $30/10x order at ~589 must round
+    DOWN onto it, never up (rounding up would overshoot intended margin)."""
+    sized = calculate_size(margin_usd=D(30), leverage=D(10), price=D("589.38"),
+                           spec=BNB, max_deviation_percent=TOL)
+    assert sized.size == D("0.50")
+    assert sized.size % BNB.size_increment == 0
+    assert sized.notional <= D(300)
+
+
+def test_bnb_respects_its_50x_exchange_cap():
+    """BNB's exchange max is 50x, not BTC's 100x — read from the spec, so a
+    signal asking for more is capped by the instrument, not a constant."""
+    assert BNB.max_leverage == D(50)
+    assert effective_leverage(D(80), max_leverage=D(100), default_leverage=D(10),
+                              exchange_max_leverage=BNB.max_leverage) == D(50)

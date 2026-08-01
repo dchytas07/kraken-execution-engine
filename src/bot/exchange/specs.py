@@ -21,6 +21,11 @@ SYMBOL_MAP: dict[CanonicalAsset, str] = {
     CanonicalAsset.BTC: "PF_XBTUSD",
     CanonicalAsset.ETH: "PF_ETHUSD",
     CanonicalAsset.SOL: "PF_SOLUSD",
+    # Verified against the live API 2026-07-31: flexible_futures, base BNB,
+    # quote USD, category "Layer 1", mark tracking index to 0.015%. A direct
+    # perpetual, NOT a wrapped or tokenised proxy — so unlike XAU below it
+    # needs no substitute note.
+    CanonicalAsset.BNB: "PF_BNBUSD",
     # SUBSTITUTE, not the asset itself. Kraken lists no spot-gold perpetual;
     # PF_XAUTUSD is Tether Gold. Reachable only when the gold pin is lifted,
     # which Study A currently forbids (docs/KRAKEN_NOTES.md 1B).

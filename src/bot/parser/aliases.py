@@ -29,6 +29,10 @@ _ALIASES: dict[CanonicalAsset, frozenset[str]] = {
         {"sol", "solana", "solusd", "solusdt", "solusdc", "solperp",
          "solusdperp"}
     ),
+    CanonicalAsset.BNB: frozenset(
+        {"bnb", "binancecoin", "bnbusd", "bnbusdt", "bnbusdc", "bnbperp",
+         "bnbusdperp"}
+    ),
     CanonicalAsset.XAU: frozenset(
         {"xau", "gold", "xauusd", "xauusdt", "gld", "xaut", "xautusd"}
     ),
@@ -43,12 +47,28 @@ _TOKEN_TO_ASSET: dict[str, CanonicalAsset] = {
 # matching a prefix.
 _KNOWN_OTHER_ASSETS = frozenset(
     {
-        "xrp", "ripple", "ada", "cardano", "doge", "dogecoin", "bnb", "avax",
+        # "bnb" was here until 2026-07-31, when PF_BNBUSD was verified as a
+        # direct perpetual and BNB became supported. A token must never be in
+        # both maps: _ALIASES means "trade this", this set means "recognised
+        # but refuse", and the overlap would make the verdict depend on
+        # lookup order.
+        "xrp", "ripple", "ada", "cardano", "doge", "dogecoin", "avax",
         "matic", "polygon", "dot", "polkadot", "link", "chainlink", "ltc",
         "litecoin", "bch", "trx", "tron", "shib", "pepe", "apt", "arb", "op",
         "sui", "near", "atom", "ton", "xag", "silver", "wti", "oil",
     }
 )
+
+# Import-time guard. Promoting an asset means adding it to _ALIASES AND
+# removing it from _KNOWN_OTHER_ASSETS; forgetting the second half leaves a
+# token that means both "trade this" and "refuse this", and which one wins is
+# an implementation detail nobody should have to reason about.
+_OVERLAP = set(_TOKEN_TO_ASSET) & _KNOWN_OTHER_ASSETS
+if _OVERLAP:
+    raise AssertionError(
+        f"token(s) {sorted(_OVERLAP)} are both a supported alias and a known "
+        "unsupported asset; remove them from _KNOWN_OTHER_ASSETS"
+    )
 
 # Splits on anything that is not alphanumeric, so "BTC/USD", "BTC-USD" and
 # "$BTC" all yield a "btc" token.

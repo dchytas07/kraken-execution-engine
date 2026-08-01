@@ -480,7 +480,52 @@ Status: **API-VERIFIED** against kraken-cli 0.3.2 on 2026-07-29.
 | BTC | `PF_XBTUSD` | 1 | 0.0001 | 1 | 100x |
 | ETH | `PF_ETHUSD` | 1 | 0.001 | 0.1 | 100x |
 | SOL | `PF_SOLUSD` | 1 | 0.01 | 0.01 | 50x |
+| BNB | `PF_BNBUSD` | 1 | 0.01 | 0.01 | 50x |
 | XAU | `PF_XAUTUSD` | 1 | 0.001 | 0.1 | 50x |
+
+### 2.1 BNB — verified and ENABLED, 2026-07-31
+
+`PF_BNBUSD` was verified the same way BTC/ETH/SOL were, from the live API
+rather than from its name: `type: flexible_futures`, base `BNB`, quote `USD`,
+category **Layer 1**, `contractSize` 1, mark 589.38 against index 589.29
+(0.015% apart), 24h volume 1,967. A direct perpetual with no wrapper, so
+unlike XAU it needs no substitute note and no tracking study.
+
+Promoting it required removing `bnb` from the parser's `_KNOWN_OTHER_ASSETS`,
+where it had been listed as recognised-but-unsupported. A token in both maps
+means "trade this" and "refuse this" simultaneously and the winner depends on
+lookup order, so `aliases.py` now raises at import if the two sets ever
+overlap again.
+
+### 2.2 S&P 500 — two instruments exist and NEITHER is safe
+
+Both were checked because the channel posts S&P signals. Neither is enabled.
+
+| Symbol | What it actually is | Price | Category |
+|---|---|---|---|
+| `PF_SPXUSD` | **SPX6900, a memecoin** — not the index | **$0.32** | `Meme` |
+| `PF_SPYXUSD` | tokenised SPY *ETF* wrapper | $744.84 | `xStocks` |
+
+`PF_SPXUSD` is the dangerous one: the ticker looks like the S&P 500, the
+channel quotes S&P around 7,400, and the instrument trades at 32 cents. Symbol
+matching alone would have bought a memecoin.
+
+`PF_SPYXUSD` is structurally the XAUT situation — a wrapped token, base asset
+`SPYx`, tracking the SPY ETF rather than the index the signals quote. The
+proposed `/10` conversion was measured against a month of hourly data rather
+than assumed:
+
+| Metric | Measured | Consequence |
+|---|---|---|
+| SPX/SPY ratio, median | **10.0343** | hardcoding `/10` bakes in 0.343% error |
+| ratio range | 10.0260 – 10.0392 | drifts with dividend accrual; not a constant |
+| worst-case error vs `/10` | **0.392%** | 26% of the 1.5% stale-entry budget, before any market move |
+| hours the index quoted | **155 / 726 (21.3%)** | |
+| hours the perp trades blind | **572 (78.7%)** | Study A disqualified GOLD at 32% |
+
+The `/10` is real in origin — SPY genuinely trades near a tenth of SPX — but
+it is neither exact nor stable, and 78.7% of the time there is no index to
+compare against at all. Not enabled.
 
 - `type: flexible_futures`; size is denominated in **base-asset units**.
 - Size increment = `10 ** -contractValueTradePrecision`.
