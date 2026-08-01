@@ -41,6 +41,7 @@ SAFETY_FUNCTIONS = {
     "get_active_trade_for_symbol": "one active trade per symbol",
     "resize_stop_to_position": "brief 14 — stop tracks actual position",
     "_verify_stop": "brief 16 — stop replacement verification",
+    "_realized_pnl": "called by _finalise_close, computes P&L from confirmed fills",
     "_enter_safe_error": "brief 32 — dangerous states are loud",
     "await_flat": "brief 27 — close confirmed before CLOSED",
     "record_decision": "brief 7 — every message gets a decision",

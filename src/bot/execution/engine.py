@@ -1124,7 +1124,16 @@ class ExecutionEngine:
             "trade closed: position flat and no orders remain",
             trade_id=trade_id,
         )
+        # Realised P&L was never computed anywhere, so every close reported
+        # no P&L and the daily summary always read $0.00. Derive it from the
+        # confirmed CLOSE fills against the recorded average entry: both are
+        # exchange-confirmed numbers, not intent.
         trade = self.store.get_trade(trade_id)
+        pnl = self._realized_pnl(trade_id, trade)
+        if pnl is not None:
+            self.store.update_trade_actuals(trade_id, realized_pnl=pnl)
+            trade = self.store.get_trade(trade_id)
+
         notify_trade_event(
             self.config, "closed",
             symbol=symbol, side=trade["direction"],
@@ -1132,6 +1141,33 @@ class ExecutionEngine:
             detail="position flat, no orders remain",
         )
         return True
+
+    def _realized_pnl(self, trade_id: int, trade) -> Decimal | None:
+        """(exit - entry) x size, signed by direction. None when unknowable.
+
+        Returns None rather than 0 when the inputs are missing: a confident
+        zero reads as breakeven, which is a different claim from "we could
+        not work it out".
+        """
+        entry = trade["actual_avg_entry_price"]
+        if not entry:
+            return None
+        total_size = Decimal(0)
+        weighted = Decimal(0)
+        for row in self.store.orders_for_trade(trade_id, OrderPurpose.CLOSE):
+            observed = self.observer.observe_order(row["client_order_id"])
+            if not observed.filled_size or not observed.avg_fill_price:
+                continue
+            total_size += Decimal(str(observed.filled_size))
+            weighted += (Decimal(str(observed.avg_fill_price))
+                         * Decimal(str(observed.filled_size)))
+        if total_size <= 0:
+            return None
+        exit_price = weighted / total_size
+        move = exit_price - Decimal(str(entry))
+        if trade["direction"] == Direction.SHORT.value:
+            move = -move
+        return (move * total_size).quantize(Decimal("0.01"))
 
     def cancel_remaining_entries(self, trade_id: int) -> int:
         """Cancel resting entry orders (brief 11: never leave stale entries)."""
