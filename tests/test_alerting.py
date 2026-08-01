@@ -15,7 +15,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bot.alerting import send_alert, send_unresolved_digest
+from bot.alerting import (
+    send_alert,
+    send_daily_summary,
+    send_unresolved_digest,
+)
 from bot.db.store import Store
 from bot.models import EventType, TradeState
 
@@ -274,3 +278,94 @@ def test_injected_clock_is_used_for_the_cadence_marker_too(store, sent):
         "duplicate digest: the marker did not use the injected clock"
     )
     assert len(sent) == 1
+
+
+# ==========================================================================
+# Trading-action notifications
+# ==========================================================================
+
+
+class Cfg:
+    alert_telegram_bot_token = "TOKEN"
+    alert_telegram_chat_id = "CHAT"
+
+
+def test_greeting_matches_the_time_of_day():
+    from bot.alerting import greeting
+    assert any(w in greeting(datetime(2026, 7, 31, 8, 0)) for w in ("Morning", "Rise", "Early"))
+    assert any(w in greeting(datetime(2026, 7, 31, 14, 0)) for w in ("Afternoon", "Midday", "Hey"))
+    assert any(w in greeting(datetime(2026, 7, 31, 19, 0)) for w in ("Evening", "Winding", "Hey"))
+    assert any(w in greeting(datetime(2026, 7, 31, 3, 0)) for w in ("Late", "Night", "midnight", "Overnight", "Still"))
+
+
+def test_greeting_rotates_rather_than_repeating():
+    """A fixed opener every time reads like a stuck machine."""
+    from bot.alerting import greeting
+    seen = {greeting(datetime(2026, 7, 31, 9, m)) for m in range(0, 60, 7)}
+    assert len(seen) > 1
+
+
+def test_trade_opened_alert_names_symbol_side_and_size(sent):
+    from bot.alerting import notify_trade_event
+    assert notify_trade_event(Cfg(), "opened", symbol="PF_XBTUSD",
+                              side="LONG", size="0.0046") is True
+    text = sent[0][2]
+    assert "Trade opened" in text and "PF_XBTUSD" in text
+    assert "LONG" in text and "0.0046" in text
+
+
+def test_tp_and_close_alerts_report_pnl_with_a_sign(sent):
+    from bot.alerting import notify_trade_event
+    notify_trade_event(Cfg(), "tp_filled", symbol="PF_ETHUSD", side="SHORT",
+                       size="0.5", pnl="12.5")
+    notify_trade_event(Cfg(), "closed", symbol="PF_ETHUSD", side="SHORT",
+                       size="0.5", pnl="-3.25")
+    assert "+$12.50" in sent[0][2]
+    assert "-$3.25" in sent[1][2]
+
+
+def test_unknown_pnl_is_never_reported_as_zero(sent):
+    """A confident 0.00 reads as breakeven; unknown must read as unknown."""
+    from bot.alerting import _money
+    assert _money(None) == "—"
+    assert _money("not-a-number") == "—"
+
+
+def test_notification_failure_never_propagates(monkeypatch):
+    from bot.alerting import notify_trade_event
+    monkeypatch.setattr("bot.alerting.send_alert",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
+    assert notify_trade_event(Cfg(), "opened", symbol="PF_XBTUSD") is False
+
+
+def test_daily_summary_reports_realised_pnl_and_open_trades(store, sent):
+    from bot.alerting import send_daily_summary
+    quarantine(store, TradeState.PARSED, "PF_XBTUSD")  # an open, healthy trade
+    assert send_daily_summary(store, Cfg()) is True
+    text = sent[0][2]
+    assert "Daily summary" in text
+    assert "realised P&L" in text
+    assert "PF_XBTUSD" in text
+
+
+def test_daily_summary_sends_even_on_a_quiet_day(store, sent):
+    """Unlike the unresolved digest, "nothing happened" IS the daily report."""
+    assert send_daily_summary(store, Cfg()) is True
+    assert "no open trades" in sent[0][2]
+
+
+def test_daily_summary_is_once_per_24h(store, sent):
+    from bot.alerting import send_daily_summary
+    assert send_daily_summary(store, Cfg()) is True
+    assert send_daily_summary(store, Cfg()) is False
+    later = datetime.now(UTC) + timedelta(hours=25)
+    assert send_daily_summary(store, Cfg(), now=later) is True
+    assert len(sent) == 2
+
+
+def test_daily_summary_never_raises_on_a_broken_store(caplog):
+    from bot.alerting import send_daily_summary
+    class Broken:
+        def last_event_at(self, _): raise RuntimeError("db gone")
+    with caplog.at_level(logging.WARNING):
+        assert send_daily_summary(Broken(), Cfg()) is False

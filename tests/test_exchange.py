@@ -28,7 +28,8 @@ INSTRUMENTS = json.loads((FIXTURES / "futures_instruments.json").read_text())[
 BY_SYMBOL = {i["symbol"]: i for i in INSTRUMENTS}
 
 V1_ASSETS = frozenset({CanonicalAsset.BTC, CanonicalAsset.ETH,
-                       CanonicalAsset.SOL, CanonicalAsset.BNB})
+                       CanonicalAsset.SOL, CanonicalAsset.BNB,
+                       CanonicalAsset.XRP, CanonicalAsset.DOGE})
 
 
 # ==========================================================================
@@ -44,6 +45,9 @@ V1_ASSETS = frozenset({CanonicalAsset.BTC, CanonicalAsset.ETH,
         (CanonicalAsset.SOL, "PF_SOLUSD", "0.01", "0.01"),
         # Captured from the live API 2026-07-31, not hand-written.
         (CanonicalAsset.BNB, "PF_BNBUSD", "0.01", "0.01"),
+        # Whole-unit increments — captured live, not assumed.
+        (CanonicalAsset.XRP, "PF_XRPUSD", "1", "0.00001"),
+        (CanonicalAsset.DOGE, "PF_DOGEUSD", "1", "0.000001"),
     ],
 )
 def test_specs_match_live_kraken_data(asset, symbol, size_incr, tick):

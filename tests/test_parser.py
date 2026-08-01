@@ -385,10 +385,10 @@ def test_vague_add_is_not_executable():
 
 
 def test_unsupported_asset_is_recorded_not_silently_dropped():
-    r = p("XRP LONG entry 2.10-2.05 TP1 2.20 TP2 2.30 TP3 2.40 TP4 2.50 SL 2.00")
+    r = p("ADA LONG entry 2.10-2.05 TP1 2.20 TP2 2.30 TP3 2.40 TP4 2.50 SL 2.00")
     assert r.asset is None
     assert not r.message_type.is_executable_candidate
-    assert any("unsupported" in w.code or "XRP" in w.detail.upper()
+    assert any("unsupported" in w.code or "ADA" in w.detail.upper()
                for w in r.parse_warnings)
 
 
@@ -516,3 +516,25 @@ def test_a_real_bnb_signal_parses_as_a_new_signal():
     assert r.asset is CanonicalAsset.BNB
     assert r.direction is Direction.SHORT
     assert r.confidence == 1.0
+
+
+# -- XRP / DOGE promotion (2026-07-31) --------------------------------------
+
+
+@pytest.mark.parametrize("alias,expected", [
+    ("XRP", CanonicalAsset.XRP), ("XRP/USDT", CanonicalAsset.XRP),
+    ("Ripple", CanonicalAsset.XRP), ("DOGE", CanonicalAsset.DOGE),
+    ("DOGE/USDT", CanonicalAsset.DOGE), ("Dogecoin", CanonicalAsset.DOGE),
+])
+def test_xrp_doge_aliases_resolve(alias, expected):
+    r = p(f"{alias} LONG entry 100 - 99 TP1 101 TP2 102 TP3 103 TP4 104 SL 98")
+    assert r.asset is expected
+
+
+def test_xrp_and_doge_no_longer_reported_unsupported():
+    from bot.parser.aliases import resolve_asset
+    for text, expected in (("long xrpusdt", CanonicalAsset.XRP),
+                           ("short dogeusdt", CanonicalAsset.DOGE)):
+        asset, unsupported = resolve_asset(text)
+        assert asset is expected
+        assert not unsupported

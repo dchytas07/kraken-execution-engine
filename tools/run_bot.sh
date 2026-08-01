@@ -18,4 +18,25 @@ if [ "$MODE" != "paper" ]; then
     exit 78   # EX_CONFIG — see KeepAlive note in the plist
 fi
 
+# Clear a demonstrably-orphaned paper-state lock.
+#
+# Stopping the bot (launchctl unload, or a crash) while kraken-cli holds the
+# lock leaves the file behind. Recovery then cannot read exchange state and
+# refuses to trade -- correct, but it means the service is wedged until
+# someone clears it by hand, which happened on two consecutive restarts.
+#
+# Only removed when the recorded holder PID is definitively NOT running. If
+# the holder is alive this leaves it alone and lets recovery refuse, because
+# clearing a live lock could corrupt paper state mid-write.
+LOCK="$HOME/Library/Application Support/kraken/paper/futures_state.json.lock"
+if [ -e "$LOCK" ]; then
+    HOLDER="$(cut -d: -f1 "$LOCK" 2>/dev/null)"
+    if [ -n "$HOLDER" ] && ! kill -0 "$HOLDER" 2>/dev/null; then
+        echo "run_bot.sh: clearing orphaned paper lock (holder $HOLDER is dead)" >&2
+        rm -f "$LOCK"
+    else
+        echo "run_bot.sh: paper lock held by live PID $HOLDER; leaving it" >&2
+    fi
+fi
+
 exec .venv/bin/python -m bot.main --run

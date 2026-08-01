@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from .alerting import send_unresolved_digest
+from .alerting import send_daily_summary, send_unresolved_digest
 from .execution.manager import PROTECTION_SLA_SECONDS, TradeManager
 from .logging_setup import get_logger
 from .reconcile import Reconciler
@@ -60,6 +60,7 @@ class LoopStats:
     manages: int = 0
     reconciles: int = 0
     digests_sent: int = 0
+    summaries_sent: int = 0
     protected: list[str] = field(default_factory=list)
     errors: int = 0
 
@@ -146,6 +147,18 @@ class BotRunner:
                     self.config.alert_telegram_chat_id,
                 ):
                     self.stats.digests_sent += 1
+                # Unrealised P&L comes from the exchange, so it is read here
+                # rather than inside alerting -- that module stays free of
+                # exchange dependencies.
+                unrealized = {}
+                try:
+                    for pos in self.manager.client.get_open_positions():
+                        unrealized[pos.symbol] = getattr(pos, "unrealized_pnl", None)
+                except Exception:  # noqa: BLE001 -- summary is best-effort
+                    unrealized = {}
+                if send_daily_summary(self.store, self.config,
+                                      unrealized=unrealized):
+                    self.stats.summaries_sent += 1
             except Exception:
                 self.stats.errors += 1
                 log.error("unresolved digest failed", exc_info=True,

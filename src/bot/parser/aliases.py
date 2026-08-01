@@ -33,6 +33,14 @@ _ALIASES: dict[CanonicalAsset, frozenset[str]] = {
         {"bnb", "binancecoin", "bnbusd", "bnbusdt", "bnbusdc", "bnbperp",
          "bnbusdperp"}
     ),
+    CanonicalAsset.XRP: frozenset(
+        {"xrp", "ripple", "xrpusd", "xrpusdt", "xrpusdc", "xrpperp",
+         "xrpusdperp"}
+    ),
+    CanonicalAsset.DOGE: frozenset(
+        {"doge", "dogecoin", "dogeusd", "dogeusdt", "dogeusdc",
+         "dogeperp", "dogeusdperp"}
+    ),
     CanonicalAsset.XAU: frozenset(
         {"xau", "gold", "xauusd", "xauusdt", "gld", "xaut", "xautusd"}
     ),
@@ -52,7 +60,7 @@ _KNOWN_OTHER_ASSETS = frozenset(
         # both maps: _ALIASES means "trade this", this set means "recognised
         # but refuse", and the overlap would make the verdict depend on
         # lookup order.
-        "xrp", "ripple", "ada", "cardano", "doge", "dogecoin", "avax",
+        "ada", "cardano", "avax",
         "matic", "polygon", "dot", "polkadot", "link", "chainlink", "ltc",
         "litecoin", "bch", "trx", "tron", "shib", "pepe", "apt", "arb", "op",
         "sui", "near", "atom", "ton", "xag", "silver", "wti", "oil",

@@ -19,19 +19,48 @@ from dotenv import load_dotenv
 from .models import CanonicalAsset, TradingMode
 
 # ---------------------------------------------------------------------------
-# v1 pin: GOLD/XAU is implemented but must not trade.
+# GOLD/XAU: pin LIFTED 2026-07-31 by explicit, repeated operator decision.
 #
-# Kraken has no spot-gold perpetual. The only candidate is PF_XAUTUSD (Tether
-# Gold), and the signal channel quotes entry/TP/SL against SPOT gold. Those two
-# series can diverge under ordinary thin-liquidity conditions (~711 OI), which
-# would corrupt the stale-entry guard and put stops at the wrong effective
-# distance. Gating the flag does not fix a units mismatch — it has to be
-# measured first (docs/PLAN.md 4.4.1, Stage 4 Study A).
+# Kraken lists no spot-gold perpetual. PF_XAUTUSD is Tether Gold (XAUT), a
+# wrapped token, and the signal channel quotes entry/TP/SL against SPOT gold.
+# The gap between the two was measured twice and FAILED both times:
 #
-# Flipping this to False is a reviewed code change, not a config edit, and is
-# permitted only once Study A passes AND BTC/ETH/SOL have run cleanly.
+#   Study A (2026-07-29, 490 overlapping hours): p99 basis 0.836% against a
+#     0.5% tolerance; max intra-hour basis change 1.417% against 0.25%.
+#   Live spot check (2026-07-31): XAUT mark 4031.16 vs COMEX GC=F 4107.00,
+#     a basis of -1.85% -- larger than the whole default 1.5% stale-entry
+#     budget on its own.
+#
+# The operator was shown both figures and chose to enable gold anyway. That is
+# their call to make; this comment exists so nobody later mistakes it for an
+# oversight. The mitigations that remain in force:
+#
+#   * ALLOW_XAUT_FOR_GOLD must still be explicitly true in .env -- lifting the
+#     pin re-arms that switch, it does not enable gold by itself.
+#   * Startup logs "GOLD/XAU -> PF_XAUTUSD (Tether Gold, NOT spot XAU)".
+#   * Every gold trade is tagged as a substitute instrument in the audit trail
+#     (is_substitute / substitute_note, set in exchange/specs.py).
+#   * A gold-specific entry-deviation allowance (see GOLD_ENTRY_DEVIATION_
+#     PERCENT below) so the measured basis does not silently consume the
+#     staleness budget meant for genuine staleness.
+#
+# Re-pinning is a one-line change back to True.
 # ---------------------------------------------------------------------------
-V1_GOLD_PIN_ACTIVE = True
+V1_GOLD_PIN_ACTIVE = False
+
+# Gold trades against a proxy whose basis to spot gold was measured at -1.85%
+# live and 0.836% at Study A's p99. The default 1.5% stale-entry budget is
+# meant to catch SIGNALS THAT AGED, but for gold the basis alone can exceed
+# it, so every gold signal would be refused as stale for a reason that has
+# nothing to do with staleness.
+#
+# 3.5% = roughly the worst observed basis (~1.85%) plus the normal 1.5%
+# staleness allowance, rounded up slightly. This is deliberately a WIDENING,
+# not a tightening: it is the price of trading a proxy, and it means a gold
+# signal can be up to ~3.5% away from the mark before it is refused. Any
+# tighter and gold cannot trade at all; any looser and genuine staleness stops
+# being caught.
+GOLD_ENTRY_DEVIATION_PERCENT = Decimal("3.5")
 
 LIVE_ACK_PHRASE = "I_UNDERSTAND_THIS_IS_REAL_MONEY"
 
@@ -47,6 +76,9 @@ V1_TRADEABLE_ASSETS = frozenset(
         # Added 2026-07-31 after live spec verification (docs/KRAKEN_NOTES.md
         # 2). Unlike XAU, PF_BNBUSD is a direct perpetual, not a substitute.
         CanonicalAsset.BNB,
+        # Added 2026-07-31 after the same live verification as BNB.
+        CanonicalAsset.XRP,
+        CanonicalAsset.DOGE,
     }
 )
 

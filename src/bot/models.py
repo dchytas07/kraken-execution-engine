@@ -44,6 +44,8 @@ class CanonicalAsset(StrEnum):
     ETH = "ETH"
     SOL = "SOL"
     BNB = "BNB"
+    XRP = "XRP"
+    DOGE = "DOGE"
     XAU = "XAU"
 
 
@@ -372,6 +374,8 @@ class EventType(StrEnum):
     # Recorded on every digest evaluation, sent or skipped. Doubles as the
     # persisted 24h cadence marker, so the digest survives restarts.
     ALERT_DIGEST = "ALERT_DIGEST"
+    # Cadence marker for the once-a-day trading summary.
+    DAILY_SUMMARY = "DAILY_SUMMARY"
 
 
 @dataclass(frozen=True, slots=True)

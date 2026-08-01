@@ -31,6 +31,7 @@ SAFETY_FUNCTIONS = {
     "check_sufficient_margin": "brief 24 — margin available before opening",
     "is_entry_stale": "brief 12 — stale signal detection",
     "check_entry_freshness": "brief 12 — stale guard on the execution path",
+    "entry_deviation_limit": "per-instrument stale allowance; 3.5% for gold's measured basis",
     "validate_size": "brief 10 — exchange-valid order size",
     "split_take_profits": "brief 13 — TP total never exceeds position",
     "allows_new_positions": "brief 25 — kill switch",
@@ -93,6 +94,9 @@ SAFETY_FUNCTIONS = {
     "send_unresolved_digest": "daily reminder of trades still awaiting review",
     "trades_in_states": "called by send_unresolved_digest, the digest query",
     "last_event_at": "called by send_unresolved_digest, the 24h cadence marker",
+    "notify_trade_event": "alerts on every real trading action",
+    "send_daily_summary": "once-a-day realised P&L and open-trade report",
+    "realized_pnl_since": "called by send_daily_summary, the day's realised P&L",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -486,6 +490,9 @@ EXCUSED_IN_CRITICAL_MODULES = {
     "_on_fill": "stream callback; wakes the loop only",
     "_log_report": "logging only",
     "_format_age": "called by send_unresolved_digest, string formatting only",
+    "greeting": "called by notify_trade_event, string formatting only",
+    "_part_of_day": "called by greeting, string formatting only",
+    "_money": "called by notify_trade_event, string formatting only",
     "_log_observation": "called by handle_message, operator logging only",
     "_log_intent": "logging only",
     "_order_verb": "command-shape helper",

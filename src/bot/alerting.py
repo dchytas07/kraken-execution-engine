@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
 from .logging_setup import get_logger
 from .models import EventType, TradeState
@@ -184,4 +185,172 @@ def send_unresolved_digest(
         log.warning(
             f"unresolved digest failed: {exc}", extra={"action": "digest_failed"}
         )
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Trading-action notifications
+# ---------------------------------------------------------------------------
+
+# A small rotating pool so the alerts do not read like a stuck machine. No
+# external call — the variation is just a template choice seeded by the
+# minute, which is deterministic enough to test and varied enough to read
+# naturally.
+_GREETINGS = {
+    "morning": ("Morning!", "Good morning —", "Rise and shine —",
+                "Morning update —", "Early one —"),
+    "afternoon": ("Afternoon!", "Good afternoon —", "Afternoon update —",
+                  "Midday check —", "Hey —"),
+    "evening": ("Evening!", "Good evening —", "Evening update —",
+                "Winding down —", "Hey there —"),
+    "night": ("Late one —", "Night owl —", "Burning the midnight oil —",
+              "Overnight update —", "Still going —"),
+}
+
+
+def _part_of_day(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
+
+
+def greeting(now: datetime | None = None) -> str:
+    """Time-appropriate opener, rotated so it is not identical every time."""
+    now = now or datetime.now()
+    pool = _GREETINGS[_part_of_day(now.hour)]
+    # Minute-seeded rather than random: two alerts in the same minute read
+    # consistently, and a test can pin the output without monkeypatching RNG.
+    return pool[(now.minute + now.hour) % len(pool)]
+
+
+def _money(value) -> str:
+    """Format a P&L with an explicit sign, or '—' when genuinely unknown.
+
+    Never invents a number: an unknown P&L prints as unknown rather than as
+    zero, because a confident 0.00 reads as breakeven.
+    """
+    if value is None:
+        return "—"
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return "—"
+    return f"{'+' if d >= 0 else '-'}${abs(d):.2f}"
+
+
+def notify_trade_event(
+    config,
+    kind: str,
+    *,
+    symbol: str,
+    side: str | None = None,
+    size=None,
+    price=None,
+    pnl=None,
+    detail: str = "",
+    now: datetime | None = None,
+) -> bool:
+    """Announce one real trading action. Never raises.
+
+    Same best-effort contract as the SAFE_ERROR/REQUIRES_REVIEW alerts: the
+    action has already happened when this runs, so a failed send is logged
+    and swallowed rather than allowed to affect it.
+    """
+    try:
+        headline = {
+            "opened": "📈 Trade opened",
+            "tp_filled": "🎯 Take-profit hit",
+            "breakeven": "🛡️ Stop moved to breakeven",
+            "closed": "✅ Trade closed",
+        }.get(kind, kind)
+
+        bits = [f"{greeting(now)} {headline}", "", f"  {symbol}"]
+        if side:
+            bits[-1] += f"  {side.upper()}"
+        if size is not None:
+            bits.append(f"  size: {size}")
+        if price is not None:
+            bits.append(f"  price: {price}")
+        if pnl is not None:
+            bits.append(f"  P&L: {_money(pnl)}")
+        if detail:
+            bits.append(f"  {detail}")
+
+        return send_alert(
+            config.alert_telegram_bot_token,
+            config.alert_telegram_chat_id,
+            "\n".join(bits),
+        )
+    except Exception as exc:  # noqa: BLE001 — alerting must never crash trading
+        log.warning(
+            f"trade notification failed: {exc}",
+            extra={"action": "notify_failed", "kind": kind, "symbol": symbol},
+        )
+        return False
+
+
+def send_daily_summary(
+    store,
+    config,
+    *,
+    now: datetime | None = None,
+    interval_seconds: int = DIGEST_INTERVAL_SECONDS,
+    unrealized: dict[str, object] | None = None,
+) -> bool:
+    """Once every 24h: realised P&L for the day, and what is still open.
+
+    Cadence marker is a persisted event for the same reason the unresolved
+    digest uses one — `time.monotonic()` resets on restart, so a daily
+    restart would mean this never fires. Unlike that digest this one sends
+    even on a quiet day, because "nothing traded" is itself the summary a
+    daily report is meant to give.
+    """
+    now = now or datetime.now(UTC)
+    try:
+        last = store.last_event_at(EventType.DAILY_SUMMARY)
+        if last:
+            try:
+                last_at = datetime.fromisoformat(last)
+                if last_at.tzinfo is None:
+                    last_at = last_at.replace(tzinfo=UTC)
+                if (now - last_at).total_seconds() < interval_seconds:
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+        since = (now - timedelta(seconds=interval_seconds)).isoformat()
+        realized, closed_count = store.realized_pnl_since(since)
+        open_rows = store.open_trades()
+
+        lines = [f"{greeting(now)} 📊 Daily summary", ""]
+        lines.append(f"  realised P&L (24h): {_money(realized)}"
+                     f"   across {closed_count} closed trade(s)")
+        if open_rows:
+            lines.append(f"\n  open trades ({len(open_rows)}):")
+            for r in open_rows:
+                u = (unrealized or {}).get(r["symbol"])
+                lines.append(
+                    f"    • {r['symbol']} {r['direction']} "
+                    f"qty {r['actual_quantity']} — {r['state']}"
+                    + (f"  unrealised {_money(u)}" if u is not None else "")
+                )
+        else:
+            lines.append("\n  no open trades")
+
+        if not send_alert(config.alert_telegram_bot_token,
+                          config.alert_telegram_chat_id, "\n".join(lines)):
+            return False
+        store.append_event(
+            EventType.DAILY_SUMMARY,
+            f"daily summary sent: {closed_count} closed, {len(open_rows)} open",
+            occurred_at=now.isoformat(),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"daily summary failed: {exc}",
+                    extra={"action": "daily_summary_failed"})
         return False

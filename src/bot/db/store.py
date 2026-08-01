@@ -351,6 +351,23 @@ class Store:
             ).fetchall()
         )
 
+    def realized_pnl_since(self, since_iso: str) -> tuple[Decimal, int]:
+        """(total realised P&L, number of trades closed) since a timestamp.
+
+        Counts only trades that actually reached CLOSED — a CANCELLED trade
+        never had a position, so including it would report a P&L for
+        something that never traded.
+        """
+        row = self._conn.execute(
+            """SELECT COALESCE(SUM(CAST(realized_pnl AS REAL)), 0) AS total,
+                      COUNT(*) AS n
+                 FROM trades
+                WHERE state = 'CLOSED' AND closed_at IS NOT NULL
+                  AND closed_at >= ?""",
+            (since_iso,),
+        ).fetchone()
+        return Decimal(str(row["total"] or 0)), int(row["n"] or 0)
+
     def last_event_at(self, event_type: EventType) -> str | None:
         """When an event of this type last occurred, or None if never.
 

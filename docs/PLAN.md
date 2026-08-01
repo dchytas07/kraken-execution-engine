@@ -206,12 +206,20 @@ Exhaustive scan of all 294 instruments (including expired and untradeable):
   Tether issuer/redemption and depeg risk, its own basis, and thinner liquidity
   (open interest 710 vs BTC's 1,919). It is **not** spot XAU/USD.
 
-> **RESOLVED 2026-07-29 — Study A ran and FAILED. GOLD stays unsupported.**
+> **RESOLVED 2026-07-29 — Study A ran and FAILED.**
+> **OVERRIDDEN 2026-07-31 — operator enabled gold anyway; see below.**
 > Measured p99 basis 0.836% (tolerance 0.5%) and max intra-hour basis change
 > 1.417% (tolerance 0.25%), robust to both the GC=F proxy premium and session
 > boundaries. A single observed 1.417% basis move would consume 94% of the
 > entire 1.5% stale-entry budget with gold not moving at all. Full method,
-> data and anti-artifact checks in `docs/KRAKEN_NOTES.md` §1B. The pin stays.
+> data and anti-artifact checks in `docs/KRAKEN_NOTES.md` §1B.
+>
+> **2026-07-31 — the pin was LIFTED by operator decision.** Study A's numbers
+> did not change and a fresh live check was worse (XAUT mark 4031.16 vs COMEX
+> gold 4107.00, a −1.85% basis, exceeding the whole 1.5% stale-entry budget).
+> The operator was shown both figures and chose to trade gold regardless. The
+> substitution disclosure, audit tagging and a gold-specific 3.5% entry
+> deviation allowance remain in force. Full record: `KRAKEN_NOTES.md` §1B.1.
 
 **DECISION (operator, 2026-07-29): trade `PF_XAUTUSD` for GOLD/XAU — but NOT in v1.**
 

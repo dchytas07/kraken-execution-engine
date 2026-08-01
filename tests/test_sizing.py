@@ -35,6 +35,8 @@ BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)   # incr 0.0001
 ETH = parse_instrument(RAW["PF_ETHUSD"], CanonicalAsset.ETH)   # incr 0.001
 SOL = parse_instrument(RAW["PF_SOLUSD"], CanonicalAsset.SOL)   # incr 0.01
 BNB = parse_instrument(RAW["PF_BNBUSD"], CanonicalAsset.BNB)   # incr 0.01
+XRP = parse_instrument(RAW["PF_XRPUSD"], CanonicalAsset.XRP)   # incr 1
+DOGE = parse_instrument(RAW["PF_DOGEUSD"], CanonicalAsset.DOGE) # incr 1
 XAUT = parse_instrument(RAW["PF_XAUTUSD"], CanonicalAsset.XAU)  # incr 0.001
 
 D = Decimal
@@ -175,7 +177,7 @@ def test_off_increment_size_rejected():
 def test_minimum_equals_one_increment():
     """KRAKEN_NOTES 4.1.1: min order size == size increment, derived from the
     API's contractValueTradePrecision rather than hardcoded."""
-    for spec in (BTC, ETH, SOL, BNB, XAUT):
+    for spec in (BTC, ETH, SOL, BNB, XRP, DOGE, XAUT):
         validate_size(spec.size_increment, spec)
         with pytest.raises(SizingError, match="SIZE_BELOW_MINIMUM"):
             validate_size(spec.size_increment / 2, spec)
@@ -396,3 +398,48 @@ def test_bnb_respects_its_50x_exchange_cap():
     assert BNB.max_leverage == D(50)
     assert effective_leverage(D(80), max_leverage=D(100), default_leverage=D(10),
                               exchange_max_leverage=BNB.max_leverage) == D(50)
+
+
+# -- XRP / DOGE (added 2026-07-31 after live verification) ------------------
+
+
+def test_xrp_and_doge_size_in_whole_units():
+    """Both have a size increment of 1 — fractional sizes are invalid, so a
+    $300 notional must floor to a whole number of coins."""
+    assert XRP.size_increment == D(1)
+    assert DOGE.size_increment == D(1)
+    xrp = calculate_size(margin_usd=D(30), leverage=D(10), price=D("1.0513"),
+                         spec=XRP, max_deviation_percent=TOL)
+    assert xrp.size == D(285)
+    assert xrp.size == xrp.size.to_integral_value()
+
+    doge = calculate_size(margin_usd=D(30), leverage=D(10), price=D("0.068209"),
+                          spec=DOGE, max_deviation_percent=TOL)
+    assert doge.size == D(4398)
+    assert doge.size == doge.size.to_integral_value()
+
+
+def test_whole_unit_rounding_stays_inside_the_deviation_cap():
+    """A whole-unit increment is coarse at a low price; confirm the loss is
+    small enough that a normal order is not refused."""
+    for spec, price in ((XRP, D("1.0513")), (DOGE, D("0.068209"))):
+        s = calculate_size(margin_usd=D(30), leverage=D(10), price=price,
+                           spec=spec, max_deviation_percent=TOL)
+        assert s.deviation_percent < D("0.5"), spec.symbol
+
+
+def test_xrp_and_doge_respect_their_50x_caps():
+    for spec in (XRP, DOGE):
+        assert spec.max_leverage == D(50)
+        assert effective_leverage(D(80), max_leverage=D(100), default_leverage=D(10),
+                                  exchange_max_leverage=spec.max_leverage) == D(50)
+
+
+# -- Gold override (operator decision 2026-07-31) ---------------------------
+
+
+def test_gold_keeps_its_substitute_flag_after_the_pin_was_lifted():
+    """Enabling gold must not quietly drop the disclosure that PF_XAUTUSD is
+    Tether Gold rather than spot XAU."""
+    assert XAUT.is_substitute is True
+    assert "NOT spot XAU" in XAUT.substitute_note

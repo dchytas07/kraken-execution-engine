@@ -338,7 +338,7 @@ without the underlying asset moving at all. The guard would be measuring basis,
 not staleness. A stop placed at a spot-derived level sits at an unpredictable
 effective distance, and can be triggered by basis alone.
 
-### Verdict
+### Verdict (SUPERSEDED — see below)
 
 GOLD/XAU remains **unsupported**. `V1_GOLD_PIN_ACTIVE` stays `True`. This is now
 an empirical finding, not a precaution. Revisit only if Kraken lists a genuine
@@ -347,6 +347,39 @@ is not sufficient grounds to enable it, because the failure is structural
 (separate instrument, separate liquidity, 24/7 vs session-bound).
 
 Raw series: `tests/fixtures/study_a_xaut_gold.json`.
+
+### 1B.1 OPERATOR OVERRIDE — gold ENABLED 2026-07-31
+
+The pin was lifted and `ALLOW_XAUT_FOR_GOLD=true` set, by explicit operator
+decision taken **after** being shown the failure twice:
+
+| Measurement | Date | Result | Tolerance |
+|---|---|---|---|
+| Study A, p99 abs basis | 2026-07-29 | **0.836%** | < 0.5% ❌ |
+| Study A, max intra-hour change | 2026-07-29 | **1.417%** | < 0.25% ❌ |
+| Live spot check, XAUT mark 4031.16 vs COMEX GC=F 4107.00 | 2026-07-31 | **−1.85% basis** | — |
+
+The −1.85% figure matters most: it exceeds the entire default 1.5%
+stale-entry budget on its own, so with default settings every gold signal
+would have been refused as "stale" for a reason unrelated to staleness.
+
+This is recorded as a **deliberate override, not a re-evaluation**. Nothing
+in the measurements improved; the operator accepted the risk. Mitigations
+kept in force:
+
+- `ALLOW_XAUT_FOR_GOLD` must still be explicitly true — lifting the pin
+  re-arms the switch, it does not enable gold by itself.
+- Startup logs `GOLD/XAU -> PF_XAUTUSD (Tether Gold, NOT spot XAU)`.
+- Gold trades carry `is_substitute` and `substitute_note` through the audit
+  trail, and `resolve_specs` logs a WARNING naming the substitution on every
+  startup.
+- **`GOLD_ENTRY_DEVIATION_PERCENT = 3.5%`** replaces the default 1.5% for XAU
+  only. Reasoning: worst observed basis (~1.85%) plus the normal 1.5%
+  staleness allowance. This is a **widening**, and the tradeoff is explicit —
+  tighter and gold cannot trade at all, looser and genuine staleness stops
+  being caught. It applies to XAU alone; every other asset keeps 1.5%.
+
+Re-pinning is a one-line change: `V1_GOLD_PIN_ACTIVE = True` in config.py.
 
 ---
 

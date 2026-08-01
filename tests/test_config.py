@@ -132,19 +132,24 @@ def test_gold_is_off_by_default():
     assert not c.is_tradeable(CanonicalAsset.XAU)
 
 
-def test_gold_stays_off_even_when_operator_sets_the_flag():
-    """The v1 pin overrides the environment entirely (docs/PLAN.md 4.4.2)."""
-    assert V1_GOLD_PIN_ACTIVE, "this test guards the v1 pin; update it deliberately"
+def test_the_gold_pin_mechanism_still_overrides_the_env_flag(monkeypatch):
+    """The pin was LIFTED 2026-07-31 by operator decision (KRAKEN_NOTES 1B.1),
+    so this no longer asserts the pin is on. It asserts the pin still WORKS,
+    because re-pinning is the documented way to switch gold back off."""
+    monkeypatch.setattr("bot.config.V1_GOLD_PIN_ACTIVE", True)
     c = cfg(ALLOW_XAUT_FOR_GOLD="true")
     assert c.allow_xaut_for_gold is False
     assert c.gold_pin_overridden_request is True
     assert not c.is_tradeable(CanonicalAsset.XAU)
-
-
-def test_gold_override_attempt_is_disclosed_in_banner():
-    banner = "\n".join(cfg(ALLOW_XAUT_FOR_GOLD="true").startup_banner())
+    banner = "\n".join(c.startup_banner())
     assert "GOLD/XAU: DISABLED" in banner
     assert "pin overrides it" in banner
+
+
+def test_gold_pin_is_currently_lifted():
+    """Records the current state explicitly, so flipping it back is a visible
+    test change rather than a silent one."""
+    assert V1_GOLD_PIN_ACTIVE is False
 
 
 def test_btc_eth_sol_always_tradeable():
@@ -217,3 +222,22 @@ def test_channel_whitespace_is_stripped():
 
 def test_blank_channel_is_none_not_empty_string():
     assert cfg(TELEGRAM_CHANNEL="").telegram_channel is None
+
+
+# -- Gold override (operator decision 2026-07-31) ---------------------------
+
+
+def test_gold_pin_is_lifted_but_still_requires_the_env_flag():
+    """Lifting the pin re-arms ALLOW_XAUT_FOR_GOLD; it must not enable gold
+    on its own."""
+    from bot.models import CanonicalAsset
+    off = cfg(ALLOW_XAUT_FOR_GOLD="false")
+    assert off.is_tradeable(CanonicalAsset.XAU) is False
+    on = cfg(ALLOW_XAUT_FOR_GOLD="true")
+    assert on.is_tradeable(CanonicalAsset.XAU) is True
+
+
+def test_enabled_gold_discloses_the_substitution_at_startup():
+    banner = "\n".join(cfg(ALLOW_XAUT_FOR_GOLD="true").startup_banner())
+    assert "PF_XAUTUSD" in banner
+    assert "NOT spot XAU" in banner

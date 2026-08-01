@@ -114,7 +114,7 @@ def test_spot_signal_with_full_leveraged_params_still_refused(gate):
 def test_unsupported_asset_refused_and_recorded(gate):
     admission, store, _, _positions = gate
     parsed, row = ingest(
-        store, "XRP LONG entry 2.10-2.05 TP1 2.2 TP2 2.3 TP3 2.4 TP4 2.5 SL 2.0"
+        store, "ADA LONG entry 2.10-2.05 TP1 2.2 TP2 2.3 TP3 2.4 TP4 2.5 SL 2.0"
     )
     result = admission.admit(parsed, row)
     assert result.refused
@@ -292,7 +292,7 @@ def test_kill_switch_does_not_mask_a_more_specific_reason(gate):
     "text",
     [
         "BTC spot buy and hold",
-        "XRP LONG entry 2.1-2.0 TP1 2.2 TP2 2.3 TP3 2.4 TP4 2.5 SL 1.9",
+        "ADA LONG entry 2.1-2.0 TP1 2.2 TP2 2.3 TP3 2.4 TP4 2.5 SL 1.9",
         "gm everyone",
         "close it",
         "BTC LONG entry 64000-63500 SL 62500",

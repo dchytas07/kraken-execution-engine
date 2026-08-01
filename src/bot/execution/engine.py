@@ -22,13 +22,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from ..alerting import send_alert
-from ..config import Config
+from ..alerting import notify_trade_event, send_alert
+from ..config import GOLD_ENTRY_DEVIATION_PERCENT, Config
 from ..db.store import Store
 from ..exchange.base import ExchangeClient, OrderRequest, Position
 from ..killswitch import KillSwitch
 from ..logging_setup import get_logger
 from ..models import (
+    CanonicalAsset,
     Direction,
     EventType,
     InstrumentSpec,
@@ -242,20 +243,31 @@ class ExecutionEngine:
             total_intended_margin=self.config.trade_margin_usd,
         )
 
+    def entry_deviation_limit(self, spec: InstrumentSpec) -> Decimal:
+        """The stale-entry allowance for this instrument.
+
+        Substitute instruments get their own, wider allowance. Gold trades
+        against PF_XAUTUSD, whose basis to spot gold was measured at -1.85%
+        live — larger than the default 1.5% budget on its own, so every gold
+        signal would be refused as "stale" for a reason that has nothing to
+        do with the signal's age. See config.GOLD_ENTRY_DEVIATION_PERCENT.
+        """
+        if spec.is_substitute and spec.asset is CanonicalAsset.XAU:
+            return GOLD_ENTRY_DEVIATION_PERCENT
+        return self.config.max_entry_deviation_percent
+
     def check_entry_freshness(
         self, spec: InstrumentSpec, entry_prices: tuple[Decimal, ...]
     ) -> Decimal:
         """Stale-signal guard (brief 12). Raises if price has run too far."""
         mark = self.client.get_mark_price(spec.symbol)
-        stale, deviation = is_entry_stale(
-            mark, entry_prices, self.config.max_entry_deviation_percent
-        )
+        limit = self.entry_deviation_limit(spec)
+        stale, deviation = is_entry_stale(mark, entry_prices, limit)
         if stale:
             raise ExecutionRefused(
                 "STALE_ENTRY",
                 f"{spec.symbol}: mark {mark} is {deviation:.2f}% beyond the entry "
-                f"range {entry_prices} (limit "
-                f"{self.config.max_entry_deviation_percent}%)",
+                f"range {entry_prices} (limit {limit}%)",
             )
         return mark
 
@@ -394,6 +406,13 @@ class ExecutionEngine:
             )
             submitted.append(coid)
 
+        notify_trade_event(
+            self.config, "opened",
+            symbol=spec.symbol, side=plan.direction.value,
+            size=plan.total_intended_size,
+            detail=f"{len(submitted)} entry order(s) resting, "
+                   f"{plan.leverage}x, ${plan.total_intended_margin} margin",
+        )
         return submitted
 
     def sync_entry_fills(self, trade_id: int) -> Position | None:
@@ -711,6 +730,12 @@ class ExecutionEngine:
         self.store.append_event(
             EventType.BREAKEVEN_ACTIVATED, "breakeven active", trade_id=trade_id
         )
+        notify_trade_event(
+            self.config, "breakeven",
+            symbol=spec.symbol, side=direction.value, size=position.size,
+            price=breakeven,
+            detail="downside now capped at entry",
+        )
         return True
 
     def _verify_stop(
@@ -866,6 +891,7 @@ class ExecutionEngine:
             observed = self.observer.observe_order(
                 row["client_order_id"], expected_size=Decimal(row["quantity"])
             )
+            was_filled = OrderStatus(row["status"]) is OrderStatus.FILLED
             self._persist_observation(row["id"], observed)
             if observed.is_filled:
                 highest = max(highest, int(row["sequence"]))
@@ -875,6 +901,24 @@ class ExecutionEngine:
                     trade_id=trade_id,
                     order_id=row["id"],
                 )
+                # Only on the transition into FILLED. sync_take_profits runs
+                # every strategy cycle, so keying off is_filled alone would
+                # re-announce the same TP indefinitely.
+                if not was_filled:
+                    trade = self.store.get_trade(trade_id)
+                    entry = trade["actual_avg_entry_price"]
+                    pnl = None
+                    if entry and observed.avg_fill_price:
+                        move = Decimal(str(observed.avg_fill_price)) - Decimal(str(entry))
+                        if trade["direction"] == Direction.SHORT.value:
+                            move = -move
+                        pnl = move * Decimal(str(observed.filled_size))
+                    notify_trade_event(
+                        self.config, "tp_filled",
+                        symbol=trade["symbol"], side=trade["direction"],
+                        size=observed.filled_size, price=observed.avg_fill_price,
+                        pnl=pnl, detail=f"TP{row['sequence']} of 4",
+                    )
 
         self._advance_tp_state(trade_id, highest)
         return highest
@@ -1079,6 +1123,13 @@ class ExecutionEngine:
             EventType.TRADE_CLOSED,
             "trade closed: position flat and no orders remain",
             trade_id=trade_id,
+        )
+        trade = self.store.get_trade(trade_id)
+        notify_trade_event(
+            self.config, "closed",
+            symbol=symbol, side=trade["direction"],
+            size=trade["actual_quantity"], pnl=trade["realized_pnl"],
+            detail="position flat, no orders remain",
         )
         return True
 
