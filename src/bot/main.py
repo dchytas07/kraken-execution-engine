@@ -27,6 +27,7 @@ from .models import EventType
 from .pipeline import SignalPipeline, build_admission
 from .runner import BotRunner
 from .safety.permissions import SafetyCheckFailed, enforce, run_permission_checks
+from .status import build_status
 from .telegram.listener import TelegramListener
 
 log = get_logger("bot.main")
@@ -302,6 +303,15 @@ def main(argv: list[str] | None = None) -> int:
         help="watch the Telegram channel and drive the trading loops until stopped",
     )
     parser.add_argument(
+        "--status",
+        action="store_true",
+        help=(
+            "print a read-only status report and exit. Safe while the live "
+            "service is running: reads the database read-only and the paper "
+            "state file directly, so it never takes the paper-state lock"
+        ),
+    )
+    parser.add_argument(
         "--test-alert",
         action="store_true",
         help=(
@@ -324,6 +334,10 @@ def main(argv: list[str] | None = None) -> int:
         level=config.log_level,
         secrets=collect_secrets(),
     )
+
+    if args.status:
+        print(build_status(config))
+        return 0
 
     if args.test_alert:
         ok = send_alert(

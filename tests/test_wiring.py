@@ -98,6 +98,7 @@ SAFETY_FUNCTIONS = {
     "notify_trade_event": "alerts on every real trading action",
     "send_daily_summary": "once-a-day realised P&L and open-trade report",
     "realized_pnl_since": "called by send_daily_summary, the day's realised P&L",
+    "build_status": "read-only status report; called by main --status",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
