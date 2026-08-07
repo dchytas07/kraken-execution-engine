@@ -456,6 +456,11 @@ class ExecutionEngine:
             # Protection first, bookkeeping second. Driven by the observed
             # position, never by the state label — see the docstring.
             self.resize_stop_to_position(trade_id=trade_id, position=position)
+            # The ladder must track the position too — a later entry filling
+            # used to leave it covering only the earlier entry's share.
+            self.resize_take_profits_to_position(
+                trade_id=trade_id, position=position
+            )
 
             _, avg_entry = self._weighted_entry(entry_orders)
             self.store.update_trade_actuals(
@@ -789,6 +794,121 @@ class ExecutionEngine:
             )
             return False
         return True
+
+    def resize_take_profits_to_position(
+        self, *, trade_id: int, position: Position
+    ) -> bool:
+        """Keep the UNFILLED TP legs summing to exactly the position.
+
+        The stop already tracks the position (resize_stop_to_position). The
+        ladder did not, so a second entry filling after the ladder was placed
+        left it covering only the first entry's share — observed live on a
+        real trade: stop 0.0046, ladder 0.0023, i.e. half the position with
+        no take-profit cover at all.
+
+        The two directions are NOT symmetric, and the handling differs:
+
+          * ladder < position — under-covered. Less profit is taken than
+            intended. Undesirable, not dangerous: the STOP is what bounds
+            loss, and it is sized separately. Logged, never SAFE_ERROR.
+          * ladder > position — over-covered. Reduce-only protects us at the
+            exchange, but a ladder summing above the position is exactly what
+            brief 13 forbids, so a failure to shrink it escalates.
+
+        Only unfilled legs are resized. A filled TP has already taken its
+        share, and the position observed here is what remains after it.
+        """
+        rows = [
+            o
+            for o in self.store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT)
+            if not OrderStatus(o["status"]).is_final and o["exchange_order_id"]
+        ]
+        if not rows:
+            return False  # no ladder yet, or every leg already filled
+
+        current = sum(Decimal(o["quantity"]) for o in rows)
+        if current == position.size:
+            return True
+
+        spec = self._spec_for_trade(trade_id)
+        if spec is None:
+            log.warning(
+                f"cannot resize TP ladder on {position.symbol}: no instrument spec",
+                extra={"trade_id": trade_id, "action": "tp_resize_no_spec"},
+            )
+            return False
+
+        # Re-split the CURRENT position across the legs that remain, so the
+        # parts still sum to exactly the position (brief 13).
+        parts = split_take_profits(position.size, spec, levels=len(rows))
+        if sum(parts) > position.size:
+            self._enter_safe_error(
+                trade_id,
+                f"TP resize would exceed the position: {sum(parts)} > "
+                f"{position.size}",
+                symbol=position.symbol,
+            )
+            return False
+
+        failed = []
+        for row, size in zip(rows, parts):
+            if Decimal(row["quantity"]) == size:
+                continue
+            if self.client.amend_order(row["exchange_order_id"], size=size):
+                with self.store.transaction() as conn:
+                    conn.execute(
+                        "UPDATE orders SET quantity = ? WHERE id = ?",
+                        (str(size), row["id"]),
+                    )
+            else:
+                failed.append(row["client_order_id"])
+
+        if failed:
+            if current > position.size:
+                # Shrinking failed and the ladder still exceeds the position.
+                self._enter_safe_error(
+                    trade_id,
+                    f"TP ladder still covers {current} against a position of "
+                    f"{position.size}; could not shrink {failed}",
+                    symbol=position.symbol,
+                )
+            else:
+                log.warning(
+                    f"TP resize failed for {failed}; ladder covers {current} of "
+                    f"{position.size} — under-covered, position still protected "
+                    "by the stop",
+                    extra={"trade_id": trade_id, "symbol": position.symbol,
+                           "action": "tp_resize_failed"},
+                )
+            return False
+
+        self.store.append_event(
+            EventType.ORDER_ACCEPTED,
+            f"TP ladder resized {current} -> {position.size} to match the position",
+            trade_id=trade_id,
+        )
+        log.info(
+            f"TP ladder resized {current} -> {position.size} on {position.symbol}",
+            extra={"trade_id": trade_id, "symbol": position.symbol,
+                   "action": "tp_resized"},
+        )
+        return True
+
+    def _spec_for_trade(self, trade_id: int) -> InstrumentSpec | None:
+        """Resolve the instrument spec via the ExchangeClient interface.
+
+        Uses get_instrument_spec (declared on ExchangeClient) rather than
+        load_specs (KrakenCliAdapter only) — an adapter-only call would
+        silently resolve to nothing for any other conforming client, which
+        is precisely the kind of quiet no-op this codebase keeps finding.
+        """
+        row = self.store.get_trade(trade_id)
+        if row is None:
+            return None
+        try:
+            return self.client.get_instrument_spec(CanonicalAsset(row["asset"]))
+        except Exception:  # noqa: BLE001 — a missing spec is reported, not fatal
+            return None
 
     def _active_stop_row(self, trade_id: int):
         trade = self.store.get_trade(trade_id)
@@ -1154,7 +1274,17 @@ class ExecutionEngine:
             return None
         total_size = Decimal(0)
         weighted = Decimal(0)
-        for row in self.store.orders_for_trade(trade_id, OrderPurpose.CLOSE):
+        # Every way a position can LEAVE, not just an explicit close. A
+        # stop-out or a TP fill exits the position without any CLOSE order,
+        # and those are precisely the closes worth accounting for -- looking
+        # only at CLOSE returned None for a real stopped-out trade.
+        exit_rows = [
+            row
+            for purpose in (OrderPurpose.CLOSE, OrderPurpose.STOP_LOSS,
+                            OrderPurpose.TAKE_PROFIT)
+            for row in self.store.orders_for_trade(trade_id, purpose)
+        ]
+        for row in exit_rows:
             observed = self.observer.observe_order(row["client_order_id"])
             if not observed.filled_size or not observed.avg_fill_price:
                 continue

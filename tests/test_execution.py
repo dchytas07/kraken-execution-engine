@@ -1418,3 +1418,155 @@ def test_repeated_stop_placement_never_collides(setup):
     ids = [r["client_order_id"]
            for r in store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)]
     assert len(ids) == len(set(ids)) == 4
+
+
+# -- TP ladder tracks the position (regression, found live on trade 3) ------
+
+
+def test_tp_ladder_resizes_when_a_later_entry_fills(setup):
+    """THE BUG: the ladder was built from the position after only entry 1
+    filled, and never resized when entry 2 filled. Observed live — stop
+    0.0046 covering 100%, ladder 0.0023 covering 50%."""
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+
+    # Entry 1 only.
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    position = exchange.get_position("PF_XBTUSD")
+    half = position.size
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=D(62500),
+                      position=position)
+    engine.place_take_profits(
+        trade_id=trade_id, trade_uid=uid, spec=BTC, direction=Direction.LONG,
+        take_profits=(D(65000), D(66000), D(67000), D(68000)), position=position)
+
+    def ladder_total():
+        return sum(D(str(o["quantity"]))
+                   for o in store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT)
+                   if not OrderStatus(o["status"]).is_final)
+
+    assert ladder_total() == half, "ladder should start matching the half position"
+
+    # Entry 2 fills — the position doubles.
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+    full = exchange.get_position("PF_XBTUSD").size
+    assert full > half
+
+    stop = next(o for o in exchange.get_open_orders() if o.order_type == "stop")
+    assert stop.size == full, "stop tracks the position (this already worked)"
+    assert ladder_total() == full, (
+        f"TP ladder still covers {ladder_total()} of {full} — the ladder did "
+        "not track the position"
+    )
+    # brief 13: never MORE than the position.
+    assert ladder_total() <= full
+
+
+def test_tp_resize_never_exceeds_the_position(setup):
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+    position = exchange.get_position("PF_XBTUSD")
+    engine.place_take_profits(
+        trade_id=trade_id, trade_uid=uid, spec=BTC, direction=Direction.LONG,
+        take_profits=(D(65000), D(66000), D(67000), D(68000)), position=position)
+
+    engine.resize_take_profits_to_position(trade_id=trade_id, position=position)
+    total = sum(D(str(o["quantity"]))
+                for o in store.orders_for_trade(trade_id, OrderPurpose.TAKE_PROFIT)
+                if not OrderStatus(o["status"]).is_final)
+    assert total <= position.size
+
+
+def test_failed_tp_resize_is_not_treated_as_a_safety_failure(setup, caplog):
+    """A ladder SMALLER than the position takes less profit — undesirable,
+    not dangerous, because the STOP bounds the loss and is sized separately.
+    It must warn, not drive the trade to SAFE_ERROR.
+
+    Calls the resize directly: FakeExchange.amend_fails is global, so going
+    through sync_entry_fills would fail the STOP resize too and that path
+    legitimately escalates — masking what this test is actually about.
+    """
+    import logging
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    half_position = exchange.get_position("PF_XBTUSD")
+    engine.place_take_profits(
+        trade_id=trade_id, trade_uid=uid, spec=BTC, direction=Direction.LONG,
+        take_profits=(D(65000), D(66000), D(67000), D(68000)),
+        position=half_position)
+
+    # A position twice the ladder, with every amend refused.
+    exchange.amend_fails = True
+    bigger = Position(symbol="PF_XBTUSD", side="long",
+                      size=half_position.size * 2, entry_price=D(63750))
+    with caplog.at_level(logging.WARNING):
+        ok = engine.resize_take_profits_to_position(trade_id=trade_id,
+                                                    position=bigger)
+
+    assert ok is False
+    assert store.get_trade(trade_id)["state"] != TradeState.SAFE_ERROR.value, (
+        "an under-covered ladder is not a safety failure — the stop bounds loss"
+    )
+    assert any("under-covered" in r.message for r in caplog.records)
+
+
+def test_failed_tp_shrink_IS_a_safety_failure(setup, caplog):
+    """The other direction: a ladder that exceeds the position could open a
+    reverse position (brief 13), so failing to shrink it must escalate."""
+    import logging
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+    full = exchange.get_position("PF_XBTUSD")
+    engine.place_take_profits(
+        trade_id=trade_id, trade_uid=uid, spec=BTC, direction=Direction.LONG,
+        take_profits=(D(65000), D(66000), D(67000), D(68000)), position=full)
+
+    # Position halved (a partial close), amends refused: the ladder now
+    # covers MORE than we hold and cannot be shrunk.
+    exchange.amend_fails = True
+    smaller = Position(symbol="PF_XBTUSD", side="long",
+                       size=full.size / 2, entry_price=D(63750))
+    with caplog.at_level(logging.CRITICAL):
+        engine.resize_take_profits_to_position(trade_id=trade_id, position=smaller)
+
+    assert store.get_trade(trade_id)["state"] == TradeState.SAFE_ERROR.value
+
+
+def test_realized_pnl_counts_a_stop_out_not_just_an_explicit_close(setup):
+    """A stopped-out trade has no CLOSE order. Looking only at CLOSE returned
+    None for a real stop-out, so the daily summary under-reported losses."""
+    engine, exchange, store, trade_id, uid = setup
+    plan = planned(engine)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    engine.sync_entry_fills(trade_id)
+    position = exchange.get_position("PF_XBTUSD")
+    stop_ids = engine.place_stop(
+        trade_id=trade_id, trade_uid=uid, spec=BTC, direction=Direction.LONG,
+        trigger_price=D(62500), position=position)
+
+    # The stop fills — the position exits with no CLOSE order anywhere.
+    stop_row = next(o for o in store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS))
+    exchange.fill(stop_row["client_order_id"], position.size, D(62500))
+
+    trade = store.get_trade(trade_id)
+    pnl = engine._realized_pnl(trade_id, trade)
+    assert pnl is not None, "a stop-out must produce a realised P&L"
+    # LONG entered ~63750, stopped at 62500 -> a loss.
+    assert pnl < 0

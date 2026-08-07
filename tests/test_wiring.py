@@ -40,6 +40,8 @@ SAFETY_FUNCTIONS = {
     "has_message": "brief 5 — message idempotency",
     "get_active_trade_for_symbol": "one active trade per symbol",
     "resize_stop_to_position": "brief 14 — stop tracks actual position",
+    "resize_take_profits_to_position": "brief 13 — TP ladder tracks actual position",
+    "_spec_for_trade": "called by resize_take_profits_to_position, spec lookup",
     "_verify_stop": "brief 16 — stop replacement verification",
     "_realized_pnl": "called by _finalise_close, computes P&L from confirmed fills",
     "_enter_safe_error": "brief 32 — dangerous states are loud",

@@ -42,6 +42,7 @@ from .db.store import Store
 from .exchange.base import ExchangeClient, ExchangeError, Fill, Order, Position
 from .execution.engine import ExecutionEngine
 from .execution.observer import ObservedOrder
+from .alerting import notify_trade_event
 from .logging_setup import get_logger
 from .models import (
     EventType,
@@ -522,10 +523,26 @@ class Reconciler:
             trade_id=trade_id,
         )
         self.store.transition_trade(trade_id, TradeState.CLOSED)
+        # A stop-out closes the position without ever entering _finalise_close,
+        # so realised P&L was left NULL for exactly the trades most worth
+        # accounting for. Reuse the engine's computation rather than a second
+        # one, and notify like any other close.
+        trade = self.store.get_trade(trade_id)
+        pnl = self.engine._realized_pnl(trade_id, trade)
+        if pnl is not None:
+            self.store.update_trade_actuals(trade_id, realized_pnl=pnl)
+            trade = self.store.get_trade(trade_id)
         self.store.append_event(
             EventType.TRADE_CLOSED,
             f"closed by reconciliation; {cancelled} leftover order(s) cancelled",
             trade_id=trade_id,
+        )
+        notify_trade_event(
+            self.engine.config, "closed",
+            symbol=symbol, side=trade["direction"],
+            size=trade["actual_quantity"], pnl=trade["realized_pnl"],
+            detail="closed outside the bot (stop-out or manual); "
+                   f"{cancelled} leftover order(s) cancelled",
         )
         log.warning(
             f"trade {trade_id} closed by reconciliation: {symbol} flat on the "
