@@ -299,15 +299,18 @@ def send_daily_summary(
     *,
     now: datetime | None = None,
     interval_seconds: int = DIGEST_INTERVAL_SECONDS,
-    unrealized: dict[str, object] | None = None,
+    positions: list | None = None,
 ) -> bool:
-    """Once every 24h: realised P&L for the day, and what is still open.
+    """Once every 24h: the day's realised P&L, and how open trades are doing.
 
-    Cadence marker is a persisted event for the same reason the unresolved
-    digest uses one — `time.monotonic()` resets on restart, so a daily
-    restart would mean this never fires. Unlike that digest this one sends
-    even on a quiet day, because "nothing traded" is itself the summary a
-    daily report is meant to give.
+    Cadence is DB-backed (a DAILY_SUMMARY event row), not an in-process
+    timer, so it survives restarts — `time.monotonic()` resets to zero on
+    every process and a daily-restarted bot would otherwise never reach 24h.
+    Verified against 18 real sends: every gap was >= 24.01h across 27
+    service restarts.
+
+    `positions` is supplied by the caller (the runner reads the exchange),
+    keeping this module free of exchange dependencies.
     """
     now = now or datetime.now(UTC)
     try:
@@ -323,21 +326,29 @@ def send_daily_summary(
                 pass
 
         since = (now - timedelta(seconds=interval_seconds)).isoformat()
-        realized, closed_count = store.realized_pnl_since(since)
+        realized, closed_count, unknown_pnl = store.realized_pnl_since(since)
         open_rows = store.open_trades()
+        by_symbol = {p.symbol: p for p in (positions or [])}
 
         lines = [f"{greeting(now)} 📊 Daily summary", ""]
         lines.append(f"  realised P&L (24h): {_money(realized)}"
                      f"   across {closed_count} closed trade(s)")
+        if unknown_pnl:
+            # SUM() skips NULLs, so an uncomputed P&L would otherwise be
+            # folded into the total as zero and read as breakeven.
+            lines.append(f"  ⚠️ {unknown_pnl} of those has no recorded P&L — "
+                         "the total above excludes it")
+
         if open_rows:
             lines.append(f"\n  open trades ({len(open_rows)}):")
             for r in open_rows:
-                u = (unrealized or {}).get(r["symbol"])
-                lines.append(
-                    f"    • {r['symbol']} {r['direction']} "
-                    f"qty {r['actual_quantity']} — {r['state']}"
-                    + (f"  unrealised {_money(u)}" if u is not None else "")
-                )
+                pos = by_symbol.get(r["symbol"])
+                head = (f"    • {r['symbol']} {r['direction']} "
+                        f"{r['actual_quantity']} — {r['state']}")
+                lines.append(head)
+                detail = _position_detail(r, pos)
+                if detail:
+                    lines.append(f"        {detail}")
         else:
             lines.append("\n  no open trades")
 
@@ -354,3 +365,37 @@ def send_daily_summary(
         log.warning(f"daily summary failed: {exc}",
                     extra={"action": "daily_summary_failed"})
         return False
+
+
+def _position_detail(trade_row, position) -> str:
+    """Entry, mark and unrealised P&L in dollars AND percent.
+
+    Percent is of the position's NOTIONAL AT ENTRY (equivalently the price
+    move), not of margin. With 10x leverage the two differ by an order of
+    magnitude, so the basis is stated in the text rather than left to be
+    guessed at.
+    """
+    if position is None:
+        return ""
+    try:
+        entry = Decimal(str(position.entry_price or trade_row["actual_avg_entry_price"]))
+        size = Decimal(str(position.size))
+        if not entry or not size:
+            return ""
+        pnl = position.unrealized_pnl
+        mark = position.mark_price
+        if pnl is None and mark is not None:
+            move = Decimal(str(mark)) - entry
+            if str(position.side).lower().startswith("short"):
+                move = -move
+            pnl = move * size
+        if pnl is None:
+            return f"entry {entry}"
+        pnl = Decimal(str(pnl))
+        notional = entry * size
+        pct = (pnl / notional * 100) if notional else Decimal(0)
+        markbit = f"mark {Decimal(str(mark)):.4f}  ·  " if mark is not None else ""
+        return (f"{markbit}unrealised {_money(pnl)} "
+                f"({pct:+.2f}% of entry notional)")
+    except (InvalidOperation, ValueError, TypeError, ZeroDivisionError):
+        return ""

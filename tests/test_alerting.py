@@ -11,6 +11,7 @@ import json
 import logging
 import urllib.error
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,8 @@ from bot.alerting import (
     send_unresolved_digest,
 )
 from bot.db.store import Store
+
+SRC_PATH = __import__('pathlib').Path(__file__).parent.parent / 'src'
 from bot.models import EventType, TradeState
 
 
@@ -369,3 +372,153 @@ def test_daily_summary_never_raises_on_a_broken_store(caplog):
         def last_event_at(self, _): raise RuntimeError("db gone")
     with caplog.at_level(logging.WARNING):
         assert send_daily_summary(Broken(), Cfg()) is False
+
+
+# ==========================================================================
+# Daily summary: cadence must survive restarts, and show open positions
+# ==========================================================================
+
+
+class FakePos:
+    def __init__(self, symbol, side, size, entry, mark=None, pnl=None):
+        self.symbol, self.side, self.size = symbol, side, Decimal(str(size))
+        self.entry_price = Decimal(str(entry))
+        self.mark_price = None if mark is None else Decimal(str(mark))
+        self.unrealized_pnl = None if pnl is None else Decimal(str(pnl))
+
+
+def _fresh_store(path):
+    """A NEW Store over the same file — what a restart actually is."""
+    return Store(path)
+
+
+def test_cadence_marker_is_written_to_the_database(tmp_path, sent):
+    """Persistence, asserted on the DB itself rather than inferred."""
+    db = tmp_path / "c.db"
+    s1 = Store(db)
+    assert send_daily_summary(s1, Cfg()) is True
+    s1.close()
+
+    # A brand-new Store over the same file — what a restart actually is.
+    s2 = Store(db)
+    assert s2.last_event_at(EventType.DAILY_SUMMARY) is not None, (
+        "no DAILY_SUMMARY marker in the database: the cadence cannot survive "
+        "a restart"
+    )
+    assert send_daily_summary(s2, Cfg()) is False
+    s2.close()
+    assert len(sent) == 1
+
+
+def test_cadence_is_read_from_the_store_not_a_process_timer(sent):
+    """THE regression, and it must be able to FAIL.
+
+    An earlier version of this test reopened a Store in-process and asserted
+    no second send. That passes even with a module-global timer, because
+    module globals survive within one pytest process — a check that cannot
+    fail. This instead hands over a store whose last_event_at reports a
+    recent send: anything reading a process-local timer ignores it and sends
+    anyway.
+    """
+    class StoreSayingItSentAnHourAgo:
+        # These return VALID data on purpose. An earlier version raised here
+        # to prove they were not reached, but the raise was swallowed by
+        # send_daily_summary's own except and the test passed for the wrong
+        # reason. With valid data, the ONLY thing that can produce False is
+        # the cadence check actually consulting last_event_at.
+        def last_event_at(self, event_type):
+            return (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        def realized_pnl_since(self, since):
+            return (Decimal("0"), 0, 0)
+        def open_trades(self):
+            return []
+        def append_event(self, *a, **kw):
+            return 1
+
+    assert send_daily_summary(StoreSayingItSentAnHourAgo(), Cfg()) is False
+    assert sent == [], "sent despite the store reporting a send 1 hour ago"
+
+
+def test_a_restart_does_not_reset_the_window_in_a_fresh_interpreter(tmp_path, sent):
+    """The faithful version: a REAL second process, so nothing in-process
+    can carry the cadence over."""
+    import subprocess, sys, textwrap
+    db = tmp_path / "c.db"
+    s1 = Store(db)
+    assert send_daily_summary(s1, Cfg()) is True
+    s1.close()
+
+    script = (
+        f"import sys; sys.path.insert(0, {str(SRC_PATH)!r})\n"
+        "from bot.alerting import send_daily_summary\n"
+        "from bot.db.store import Store\n"
+        "from pathlib import Path\n"
+        "import bot.alerting as a\n"
+        "a.send_alert = lambda *args: (_ for _ in ()).throw("
+        "AssertionError('SENT AGAIN AFTER RESTART'))\n"
+        "class C:\n"
+        "    alert_telegram_bot_token = 'T'\n"
+        "    alert_telegram_chat_id = 'C'\n"
+        f"s = Store(Path({str(db)!r}))\n"
+        "print('RESULT', send_daily_summary(s, C()))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                         text=True, timeout=60)
+    assert "RESULT False" in out.stdout, (
+        f"a fresh interpreter re-sent the summary.\nstdout={out.stdout}\n"
+        f"stderr={out.stderr[-500:]}"
+    )
+
+
+def test_cadence_reopens_after_24h_even_across_restarts(tmp_path, sent):
+    db = tmp_path / "c.db"
+    s1 = _fresh_store(db)
+    assert send_daily_summary(s1, Cfg()) is True
+    s1.close()
+    later = datetime.now(UTC) + timedelta(hours=25)
+    s2 = _fresh_store(db)
+    assert send_daily_summary(s2, Cfg(), now=later) is True
+    s2.close()
+    assert len(sent) == 2
+
+
+def test_summary_shows_open_positions_with_dollar_and_percent_pnl(store, sent):
+    quarantine(store, TradeState.PARSED, "PF_XBTUSD")
+    store.update_trade_actuals(1, actual_quantity=Decimal("0.0046"),
+                               actual_avg_entry_price=Decimal("63630"))
+    pos = [FakePos("PF_XBTUSD", "short", "0.0046", "63630",
+                   mark="64456.24", pnl="-3.80")]
+    assert send_daily_summary(store, Cfg(), positions=pos) is True
+    text = sent[0][2]
+    assert "open trades (1)" in text
+    assert "PF_XBTUSD" in text
+    assert "-$3.80" in text, "dollar P&L missing"
+    assert "%" in text and "of entry notional" in text, "percent P&L missing"
+    assert "mark 64456" in text
+
+
+def test_summary_derives_pnl_when_the_exchange_omits_it(store, sent):
+    quarantine(store, TradeState.PARSED, "PF_XBTUSD")
+    store.update_trade_actuals(1, actual_quantity=Decimal("1"),
+                               actual_avg_entry_price=Decimal("100"))
+    # No unrealized_pnl from the exchange, but a mark is available.
+    pos = [FakePos("PF_XBTUSD", "long", "1", "100", mark="110", pnl=None)]
+    assert send_daily_summary(store, Cfg(), positions=pos) is True
+    assert "+$10.00" in sent[0][2]
+
+
+def test_unrecorded_pnl_is_flagged_not_silently_counted_as_zero(store, sent):
+    """SUM() skips NULLs, so a stop-out with no computed P&L used to be
+    reported as $0.00 — indistinguishable from a genuine breakeven. This
+    happened for real: trade 3, a -$5.86 stop-out, summarised as
+    "+$0.00 across 1 closed trade"."""
+    tid = quarantine(store, TradeState.PARSED, "PF_XBTUSD")
+    store.transition_trade(tid, TradeState.CLOSING)
+    store.transition_trade(tid, TradeState.CLOSED)   # closed, realized_pnl NULL
+
+    assert send_daily_summary(store, Cfg()) is True
+    text = sent[0][2]
+    assert "1 closed trade(s)" in text
+    assert "no recorded P&L" in text, (
+        "a closed trade with NULL P&L was folded into the total as zero"
+    )

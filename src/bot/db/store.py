@@ -351,22 +351,31 @@ class Store:
             ).fetchall()
         )
 
-    def realized_pnl_since(self, since_iso: str) -> tuple[Decimal, int]:
-        """(total realised P&L, number of trades closed) since a timestamp.
+    def realized_pnl_since(self, since_iso: str) -> tuple[Decimal, int, int]:
+        """(total realised P&L, trades closed, trades with NO recorded P&L).
 
         Counts only trades that actually reached CLOSED — a CANCELLED trade
         never had a position, so including it would report a P&L for
         something that never traded.
+
+        The third value matters: SUM() over a NULL realized_pnl contributes
+        nothing, so a stopped-out trade whose P&L was never computed used to
+        be reported as $0.00 — indistinguishable from a genuine breakeven.
+        That happened for real (trade 3, a -$5.86 stop-out, summarised as
+        "+$0.00 across 1 closed trade"). Callers must surface the unknown
+        count rather than presenting the total as complete.
         """
         row = self._conn.execute(
             """SELECT COALESCE(SUM(CAST(realized_pnl AS REAL)), 0) AS total,
-                      COUNT(*) AS n
+                      COUNT(*) AS n,
+                      SUM(CASE WHEN realized_pnl IS NULL THEN 1 ELSE 0 END) AS unknown
                  FROM trades
                 WHERE state = 'CLOSED' AND closed_at IS NOT NULL
                   AND closed_at >= ?""",
             (since_iso,),
         ).fetchone()
-        return Decimal(str(row["total"] or 0)), int(row["n"] or 0)
+        return (Decimal(str(row["total"] or 0)), int(row["n"] or 0),
+                int(row["unknown"] or 0))
 
     def last_event_at(self, event_type: EventType) -> str | None:
         """When an event of this type last occurred, or None if never.

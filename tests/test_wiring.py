@@ -497,6 +497,7 @@ EXCUSED_IN_CRITICAL_MODULES = {
     "greeting": "called by notify_trade_event, string formatting only",
     "_part_of_day": "called by greeting, string formatting only",
     "_money": "called by notify_trade_event, string formatting only",
+    "_position_detail": "called by send_daily_summary, string formatting only",
     "_log_observation": "called by handle_message, operator logging only",
     "_log_intent": "logging only",
     "_order_verb": "command-shape helper",
