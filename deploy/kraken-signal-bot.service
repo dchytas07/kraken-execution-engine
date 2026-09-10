@@ -1,0 +1,34 @@
+[Unit]
+Description=Kraken Signal Bot (Telegram -> Kraken Futures execution)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=dchyt
+Group=dchyt
+WorkingDirectory=/home/dchyt/kraken-signal-bot
+
+# systemd services do not inherit the interactive shell's ~/.bashrc PATH,
+# so the kraken-cli binary (installed to ~/.cargo/bin by its own installer)
+# would otherwise be invisible to the bot's subprocess calls.
+Environment=PATH=/home/dchyt/.cargo/bin:/home/dchyt/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ExecStart=/home/dchyt/kraken-signal-bot/.venv/bin/python -m bot.main --run
+
+# Mirrors macOS LaunchAgent KeepAlive semantics: come back up no matter how
+# the process stopped, unless an operator explicitly runs `systemctl stop`.
+Restart=always
+RestartSec=5
+
+# The bot's own SIGTERM handler disconnects Telegram and exits promptly;
+# this is just a safety ceiling, not the expected shutdown time.
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
