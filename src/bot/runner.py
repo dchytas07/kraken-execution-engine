@@ -147,21 +147,19 @@ class BotRunner:
                     self.config.alert_telegram_chat_id,
                 ):
                     self.stats.digests_sent += 1
-                # Unrealised P&L comes from the exchange, so it is read here
+                # Positions come from the exchange, so they are read here
                 # rather than inside alerting -- that module stays free of
                 # exchange dependencies.
-                unrealized = {}
                 try:
-                    for pos in self.manager.client.get_open_positions():
-                        unrealized[pos.symbol] = getattr(pos, "unrealized_pnl", None)
+                    positions = list(self.manager.client.get_open_positions())
                 except Exception:  # noqa: BLE001 -- summary is best-effort
-                    unrealized = {}
+                    positions = []
                 if send_daily_summary(self.store, self.config,
-                                      unrealized=unrealized):
+                                      positions=positions):
                     self.stats.summaries_sent += 1
-            except Exception:
+            except Exception as exc:
                 self.stats.errors += 1
-                log.error("unresolved digest failed", exc_info=True,
+                log.error(f"unresolved digest failed: {exc}", exc_info=True,
                           extra={"action": "digest_failed"})
 
         return self.stats
