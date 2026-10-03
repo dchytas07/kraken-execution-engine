@@ -2,8 +2,17 @@
 Description=Kraken Signal Bot (Telegram -> Kraken Futures execution)
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=10
+
+# network-online.target is satisfied almost immediately under WSL2 (there's
+# no real NIC coming up to wait for), well before DNS/HTTP out to the
+# internet actually works post-boot. That gap made the service crash-loop
+# a few times on a Windows restart: kraken-cli's call for live mark prices
+# (needed even in paper mode) hung until our 30s subprocess timeout instead
+# of failing fast. Restart=always + RestartSec=5 recovers from that on its
+# own, but a persistently slow boot network could burn through StartLimit
+# before coming up -- so the limit is disabled. "Come back up no matter how
+# the process stopped" (below) should not have an exception for this.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -16,6 +25,10 @@ WorkingDirectory=/home/dchyt/kraken-signal-bot
 # would otherwise be invisible to the bot's subprocess calls.
 Environment=PATH=/home/dchyt/.cargo/bin:/home/dchyt/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Waits for real network reachability, not just network-online.target. See
+# deploy/wait-for-network.sh for why this is a network wait and not a
+# stale-lock cleanup (that was the initial suspect; it didn't hold up).
+ExecStartPre=/home/dchyt/kraken-signal-bot/deploy/wait-for-network.sh
 ExecStart=/home/dchyt/kraken-signal-bot/.venv/bin/python -m bot.main --run
 
 # Mirrors macOS LaunchAgent KeepAlive semantics: come back up no matter how
