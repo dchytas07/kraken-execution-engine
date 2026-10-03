@@ -16,6 +16,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+TimeoutStartSec=300
 User=dchyt
 Group=dchyt
 WorkingDirectory=/home/dchyt/kraken-signal-bot
