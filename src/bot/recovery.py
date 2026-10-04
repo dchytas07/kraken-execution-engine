@@ -152,7 +152,8 @@ class RecoveryManager:
         #    regardless of outcome.
         for symbol in self._symbols:
             actual = snapshot.leverage.get(symbol)
-            if actual is not None and actual != self.config.max_leverage:
+            expected = self.engine.expected_leverage(symbol)
+            if actual is not None and actual != expected:
                 before = self.client.get_account_state()
                 try:
                     check_sufficient_margin(
@@ -182,7 +183,7 @@ class RecoveryManager:
                     after = self.client.get_account_state()
                     log.warning(
                         f"recovery re-asserted leverage on {symbol}: {actual}x -> "
-                        f"{self.config.max_leverage}x — available margin "
+                        f"{expected}x — available margin "
                         f"${before.available_margin} -> ${after.available_margin}",
                         extra={
                             "symbol": symbol,

@@ -636,7 +636,8 @@ class Reconciler:
         """
         for symbol in self._symbols:
             actual = snapshot.leverage.get(symbol)
-            if actual is None or actual == self.config.max_leverage:
+            expected = self.engine.expected_leverage(symbol)
+            if actual is None or actual == expected:
                 continue
 
             before = self.client.get_account_state()
@@ -664,7 +665,7 @@ class Reconciler:
                 report.discrepancies.append(
                     Discrepancy(
                         DiscrepancyKind.LEVERAGE_DRIFT,
-                        f"{symbol} at {actual}x, expected {self.config.max_leverage}x",
+                        f"{symbol} at {actual}x, expected {expected}x",
                         symbol=symbol, repaired=repaired, repair_detail=detail,
                     )
                 )
@@ -677,7 +678,7 @@ class Reconciler:
                 after = self.client.get_account_state()
                 repaired, detail = (
                     True,
-                    f"re-asserted {self.config.max_leverage}x — available margin "
+                    f"re-asserted {expected}x — available margin "
                     f"${before.available_margin} -> ${after.available_margin}",
                 )
                 if after.available_margin < self.config.trade_margin_usd:
@@ -695,13 +696,13 @@ class Reconciler:
                 repaired, detail = False, f"re-assert failed: {exc}"
             log.warning(
                 f"leverage drift on {symbol}: account has {actual}x, intent is "
-                f"{self.config.max_leverage}x — {detail}",
+                f"{expected}x — {detail}",
                 extra={"symbol": symbol, "action": "leverage_drift"},
             )
             report.discrepancies.append(
                 Discrepancy(
                     DiscrepancyKind.LEVERAGE_DRIFT,
-                    f"{symbol} at {actual}x, expected {self.config.max_leverage}x",
+                    f"{symbol} at {actual}x, expected {expected}x",
                     symbol=symbol, repaired=repaired, repair_detail=detail,
                 )
             )

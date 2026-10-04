@@ -374,6 +374,7 @@ class SignalPipeline:
                 direction=Direction(parsed.direction.value),
                 entry_prices=parsed.entry_range,
                 signal_leverage=parsed.leverage,
+                stop_loss=parsed.stop_loss,
             )
             self.engine.open_trade(
                 trade_id=trade_id, trade_uid=trade_uid, spec=spec, plan=plan
@@ -415,4 +416,5 @@ def _reason_for(exc: Exception) -> RejectionReason:
         "SIZING_DEVIATION": RejectionReason.SIZING_DEVIATION,
         "LEVERAGE_INVALID": RejectionReason.LEVERAGE_INVALID,
         "LEVERAGE_EXCEEDS_CAP": RejectionReason.LEVERAGE_INVALID,
+        "STOP_BEYOND_LIQUIDATION": RejectionReason.STOP_BEYOND_LIQUIDATION,
     }.get(code, RejectionReason.SIZING_FAILED)

@@ -101,6 +101,16 @@ SAFETY_FUNCTIONS = {
     "send_daily_summary": "once-a-day realised P&L and open-trade report",
     "realized_pnl_since": "called by send_daily_summary, the day's realised P&L",
     "build_status": "read-only status report; called by main --status",
+    # Stop-vs-liquidation guard (trade 8, 2026-10-04: ETH short liquidated at
+    # 10x before its stop could trigger). Registered at every layer so the
+    # guard cannot lose its caller while a sibling keeps one.
+    "max_leverage_for_stop": "stop must trigger before estimated liquidation",
+    "_leverage_for_stop": "plan_entries lowers leverage or refuses STOP_BEYOND_LIQUIDATION",
+    "check_stop_inside_liquidation": "open_trade re-check of the plan's stop vs liquidation",
+    "set_intent_leverage": "records the leverage actually opened at",
+    "expected_leverage": "leverage drift/reassert compares against the trade's leverage, not the cap",
+    # Host suspend (2026-10-04: 12h WSL suspend left a position unwatched).
+    "detect_suspend": "frozen-loop detection: alert, then protect and reconcile at once",
 }
 
 # Properties are accessed without parentheses, so they need their own check.
@@ -460,6 +470,7 @@ CRITICAL_MODULES = (
 EXCUSED_IN_CRITICAL_MODULES = {
     # constructors / plumbing
     "__init__": "constructor",
+    "_duration": "formatting for the suspend log/alert text",
     "__post_init__": "dataclass validation; LoopIntervals asserts the SLA here",
     "build_admission": "construction; asserted by its own test",
     # data accessors, no behaviour

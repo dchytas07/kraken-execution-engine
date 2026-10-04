@@ -17,7 +17,10 @@ from bot.sizing import (
     calculate_size,
     check_sufficient_margin,
     effective_leverage,
+    estimated_liquidation_price,
     is_entry_stale,
+    liquidation_distance,
+    max_leverage_for_stop,
     round_price_to_tick,
     round_to_increment,
     split_entry_allocations,
@@ -443,3 +446,69 @@ def test_gold_keeps_its_substitute_flag_after_the_pin_was_lifted():
     Tether Gold rather than spot XAU."""
     assert XAUT.is_substitute is True
     assert "NOT spot XAU" in XAUT.substitute_note
+
+
+# ==========================================================================
+# Stop vs liquidation (trade 8, 2026-10-04)
+# ==========================================================================
+
+
+@pytest.mark.parametrize("entry,leverage,is_short,expected", [
+    # Measured on the paper engine (kraken 0.4.1) in an isolated HOME.
+    ("2702.3", "10", True, "2918.484"),
+    ("2702.3", "5", True, "3188.714"),
+    ("2702.3", "20", True, "2783.369"),
+    ("2702.5", "10", False, "2486.3"),
+])
+def test_liquidation_estimate_matches_the_paper_engine(entry, leverage, is_short, expected):
+    got = estimated_liquidation_price(D(entry), D(leverage), is_short=is_short)
+    assert got == D(expected)
+
+
+def test_trade_8_stop_sat_beyond_its_10x_liquidation():
+    """REGRESSION: ETH short 2497 at 10x liquidates at 2696.76 — the 2700
+    stop could never fire first."""
+    liq = estimated_liquidation_price(D(2497), D(10), is_short=True)
+    assert liq == D("2696.76")
+    assert liq < D(2700)
+
+
+def test_trade_8_needs_8x_with_a_one_point_buffer():
+    entries = (D(2497), D(2625))
+    assert max_leverage_for_stop(entries, D(2700), is_short=True,
+                                 buffer_percent=D("1.0")) == D(8)
+    assert max_leverage_for_stop(entries, D(2700), is_short=True,
+                                 buffer_percent=D(0)) == D(9)
+
+
+def test_stop_distance_uses_the_entry_farthest_from_the_stop():
+    """If only that entry fills, the stop is as far away as it ever gets."""
+    near_only = max_leverage_for_stop((D(2625),), D(2700), is_short=True,
+                                      buffer_percent=D(1))
+    both = max_leverage_for_stop((D(2625), D(2497)), D(2700), is_short=True,
+                                 buffer_percent=D(1))
+    assert both == D(8) < near_only
+
+
+def test_long_side_is_symmetric():
+    # far entry 100, stop 92: 8% + 2% + 1% = 11% -> 1/0.11 = 9.09 -> 9x
+    assert max_leverage_for_stop((D(98), D(100)), D(92), is_short=False,
+                                 buffer_percent=D(1)) == D(9)
+
+
+def test_exact_boundary_is_allowed():
+    # 7% + 2% + 1% = exactly 10% -> exactly 10x
+    assert max_leverage_for_stop((D(100),), D(107), is_short=True,
+                                 buffer_percent=D(1)) == D(10)
+
+
+def test_liquidation_distance_at_10x_is_8_percent():
+    assert liquidation_distance(D(10)) == D("0.08")
+
+
+@pytest.mark.parametrize("stop,is_short", [(D(2400), True), (D(2600), False)])
+def test_stop_on_the_wrong_side_is_refused(stop, is_short):
+    with pytest.raises(SizingError, match="STOP_WRONG_SIDE"):
+        max_leverage_for_stop((D(2497),), stop, is_short=is_short,
+                              buffer_percent=D(1))
+

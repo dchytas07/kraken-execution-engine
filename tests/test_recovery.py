@@ -43,6 +43,7 @@ BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)
 ETH = parse_instrument(RAW["PF_ETHUSD"], CanonicalAsset.ETH)
 SPECS = {CanonicalAsset.BTC: BTC, CanonicalAsset.ETH: ETH}
 ENTRIES = (D(64000), D(63500))
+STOP = D(62000)  # 3.1% below the far entry: inside liquidation at 10x
 
 
 class Session:
@@ -108,7 +109,7 @@ def open_entries(session, trade_id, uid):
     session.engine.mark_recovery_complete()
     plan = session.engine.plan_entries(
         spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES,
-        signal_leverage=D(10),
+        signal_leverage=D(10), stop_loss=STOP,
     )
     coids = session.engine.open_trade(
         trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan
@@ -130,7 +131,7 @@ def test_engine_refuses_to_open_before_recovery(session):
     trade_id, uid = new_trade(session)
     plan = session.engine.plan_entries(
         spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES,
-        signal_leverage=D(10),
+        signal_leverage=D(10), stop_loss=STOP,
     )
     with pytest.raises(ExecutionRefused, match="RECOVERY_INCOMPLETE"):
         session.engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC,
@@ -713,6 +714,7 @@ def test_clean_symbol_can_still_open_after_an_ambiguous_one(session):
     plan = restarted.engine.plan_entries(
         spec=ETH, direction=Direction.LONG,
         entry_prices=(D(1920), D(1910)), signal_leverage=D(10),
+        stop_loss=D(1860),
     )
     restarted.exchange.mark = D(1915)
     coids = restarted.engine.open_trade(
@@ -779,3 +781,32 @@ def test_a_genuinely_global_problem_does_block_everything(session):
     assert not result.safe_to_trade
     with pytest.raises(ExecutionRefused, match="RECOVERY_INCOMPLETE"):
         session.engine.require_recovered()
+
+
+def test_recovery_leaves_an_open_position_at_its_trade_leverage_alone(session):
+    """KRAKEN_NOTES 1C: set-leverage re-margins an open position. A trade the
+    stop guard opened at 8x must not be touched — let alone pushed to 10x —
+    when the account already holds 8x."""
+    trade_id, uid = new_trade(session)
+    session.engine.mark_recovery_complete()
+    plan = session.engine.plan_entries(
+        spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES,
+        signal_leverage=D(10), stop_loss=D(58240),  # 9% -> 8x
+    )
+    assert plan.leverage == D(8)
+    coids = session.engine.open_trade(trade_id=trade_id, trade_uid=uid,
+                                      spec=BTC, plan=plan)
+    session.exchange.fill(coids[0], plan.entries[0][1], D(64000))
+
+    restarted = session.crash()
+    calls = []
+    original = restarted.exchange.set_leverage_preference
+    restarted.exchange.set_leverage_preference = (
+        lambda symbol, lev: calls.append((symbol, lev)) or original(symbol, lev)
+    )
+    restarted.recovery.recover()
+
+    assert calls == []
+    assert restarted.exchange.leverage["PF_XBTUSD"] == D(8)
+    restarted.store.close()
+

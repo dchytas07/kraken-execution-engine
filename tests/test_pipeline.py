@@ -249,3 +249,32 @@ def test_opening_a_trade_protects_it_same_request(pipe):
     open_a_trade(pipeline, exchange)
     stops = [o for o in exchange.get_open_orders() if o.order_type == "stop"]
     assert len(stops) == 1, "trade opened and filled without protection"
+
+
+def test_stop_beyond_liquidation_refused_through_the_pipeline(pipe, monkeypatch):
+    """SL 50000 is 21.9% below the 64000 entry: safe only at 4x, below the
+    5x floor. Refused with an enumerated reason and an alert; nothing placed."""
+    pipeline, store, exchange, _ = pipe
+    sent = []
+    monkeypatch.setattr("bot.execution.engine.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    result = pipeline.handle_message(
+        channel_id=-100, message_id=1, text=SIGNAL.replace("SL: 62500", "SL: 50000"))
+    assert not result.accepted
+    assert exchange.orders == {}
+    row = store.get_message(-100, 1)
+    assert row["execution_decision"] == "REJECTED"
+    assert row["rejection_reason"] == "STOP_BEYOND_LIQUIDATION"
+    assert store.get_trade(result.trade_id)["state"] == TradeState.CANCELLED.value
+    assert any(t.startswith("REFUSED PF_XBTUSD LONG") for t in sent)
+
+
+def test_wide_stop_opens_at_lowered_leverage_through_the_pipeline(pipe):
+    """SL 58240 is 9% below 64000: the 50x signal opens at 8x, not 10x."""
+    pipeline, store, exchange, _ = pipe
+    result = pipeline.handle_message(
+        channel_id=-100, message_id=1, text=SIGNAL.replace("SL: 62500", "SL: 58240"))
+    assert result.accepted
+    assert exchange.leverage["PF_XBTUSD"] == D(8)
+    assert store.get_trade(result.trade_id)["intent_leverage"] == "8"
+

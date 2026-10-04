@@ -138,3 +138,78 @@ def test_a_failing_digest_does_not_stop_protection(monkeypatch):
     assert r.manager.sweeps == 3, "protection kept running"
     assert r.stats.errors == 2, "both digest failures counted, neither fatal"
     assert r.stats.digests_sent == 0
+
+
+# ==========================================================================
+# Suspend detection (2026-10-04: a 12h host suspend left a position unwatched)
+# ==========================================================================
+
+
+def test_suspend_gap_alerts_and_reconciles_immediately(monkeypatch, caplog):
+    import logging
+    sent = []
+    monkeypatch.setattr("bot.runner.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    monkeypatch.setattr("bot.runner.send_unresolved_digest", lambda *a, **k: False)
+    monkeypatch.setattr("bot.runner.send_daily_summary", lambda *a, **k: False)
+    r = BotRunner(manager=FakeManager(), reconciler=FakeReconciler(),
+                  intervals=LoopIntervals(), store=object(), config=FakeConfig())
+
+    r.tick(now=100, wall=1_000)
+    reconciles = r.reconciler.runs
+    sweeps = r.manager.sweeps
+    # Monotonic time barely moves across a suspend; the wall clock jumps 12h.
+    with caplog.at_level(logging.WARNING):
+        r.tick(now=102, wall=1_000 + 12 * 3600)
+
+    assert r.reconciler.runs == reconciles + 1, "reconciled despite the cadence"
+    assert r.manager.sweeps == sweeps + 1
+    assert sent == ["bot was suspended for 12h 0m, reconciling now"]
+    assert r.stats.suspends == 1
+    assert any(getattr(rec, "action", None) == "suspend_detected"
+               for rec in caplog.records)
+
+
+def test_ordinary_tick_gap_is_not_a_suspend(monkeypatch):
+    sent = []
+    monkeypatch.setattr("bot.runner.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    r = runner()
+    r.tick(now=100, wall=1_000)
+    r.tick(now=102, wall=1_002)
+    r.tick(now=222, wall=1_120)  # exactly the threshold: not exceeded
+    assert sent == [] and r.stats.suspends == 0
+
+
+def test_first_tick_is_never_a_suspend():
+    r = runner()
+    r.tick(now=0, wall=10**9)
+    assert r.stats.suspends == 0
+
+
+def test_suspend_inside_a_tick_is_detected(monkeypatch):
+    """2026-10-04: the host slept during a CLI call, so the frozen time sat
+    INSIDE a tick and the idle gap afterwards was ordinary. The wall clock
+    still jumped against the monotonic one."""
+    sent = []
+    monkeypatch.setattr("bot.runner.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    r = BotRunner(manager=FakeManager(), reconciler=FakeReconciler(),
+                  intervals=LoopIntervals(), config=FakeConfig())
+    r.tick(now=100, wall=1_000)
+    r._last_wall = 1_000 + 3600   # that tick ended an hour of wall time later
+    r.tick(now=102, wall=1_000 + 3602)  # idle gap 2s, clocks diverged by 1h
+    assert sent == ["bot was suspended for 1h 0m, reconciling now"]
+
+
+def test_slow_tick_is_not_a_suspend(monkeypatch):
+    """A tick stuck in CLI timeouts advances both clocks together."""
+    sent = []
+    monkeypatch.setattr("bot.runner.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    r = runner()
+    r.tick(now=100, wall=1_000)
+    r._last_wall = 1_300           # 300s tick
+    r.tick(now=402, wall=1_302)
+    assert sent == []
+

@@ -95,6 +95,11 @@ class Config:
     default_leverage: Decimal
     max_entry_deviation_percent: Decimal
     max_sizing_deviation_percent: Decimal
+    # Stop-vs-liquidation guard: leverage is lowered (never below this floor)
+    # until the stop triggers at least this many points before the estimated
+    # liquidation price; past the floor the signal is refused.
+    min_leverage: Decimal
+    stop_liquidation_buffer_percent: Decimal
     entry_order_expiry_hours: int
     reconciliation_interval_seconds: int
 
@@ -316,6 +321,17 @@ def load_config(
         _decimal(env, "MAX_SIZING_DEVIATION_PERCENT", "5.0"),
     )
 
+    min_leverage = _positive("MIN_LEVERAGE", _decimal(env, "MIN_LEVERAGE", "5"))
+    if min_leverage > max_leverage:
+        raise ConfigError(
+            f"MIN_LEVERAGE={min_leverage} exceeds MAX_LEVERAGE={max_leverage}"
+        )
+    stop_liquidation_buffer_percent = _decimal(env, "STOP_LIQ_BUFFER_PCT", "1.0")
+    if stop_liquidation_buffer_percent < 0:
+        raise ConfigError(
+            f"STOP_LIQ_BUFFER_PCT must be >= 0, got {stop_liquidation_buffer_percent}"
+        )
+
     entry_order_expiry_hours = _int(env, "ENTRY_ORDER_EXPIRY_HOURS", "24")
     if entry_order_expiry_hours <= 0:
         raise ConfigError("ENTRY_ORDER_EXPIRY_HOURS must be > 0")
@@ -375,6 +391,8 @@ def load_config(
         default_leverage=default_leverage,
         max_entry_deviation_percent=max_entry_deviation_percent,
         max_sizing_deviation_percent=max_sizing_deviation_percent,
+        min_leverage=min_leverage,
+        stop_liquidation_buffer_percent=stop_liquidation_buffer_percent,
         entry_order_expiry_hours=entry_order_expiry_hours,
         reconciliation_interval_seconds=reconciliation_interval_seconds,
         telegram_api_id=telegram_api_id,

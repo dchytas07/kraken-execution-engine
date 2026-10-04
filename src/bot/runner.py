@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from .alerting import send_daily_summary, send_unresolved_digest
+from .alerting import send_alert, send_daily_summary, send_unresolved_digest
 from .execution.manager import PROTECTION_SLA_SECONDS, TradeManager
 from .logging_setup import get_logger
 from .reconcile import Reconciler
@@ -43,6 +43,11 @@ class LoopIntervals:
     # survives restarts (see alerting.send_unresolved_digest). The check is
     # one indexed query, so this is cheap.
     digest_check_seconds: float = 300.0
+    # Wall-clock idle time between ticks beyond which the process is taken to
+    # have been frozen (host suspend). On 2026-10-04 a 12h WSL suspend left an
+    # ETH short unwatched while its stop level came and went. Monotonic time
+    # does not advance across a suspend, so this is measured on the wall clock.
+    suspend_gap_seconds: float = 120.0
 
     def __post_init__(self) -> None:
         # The sweep is what delivers the SLA, so it must have room for several
@@ -61,6 +66,7 @@ class LoopStats:
     reconciles: int = 0
     digests_sent: int = 0
     summaries_sent: int = 0
+    suspends: int = 0
     protected: list[str] = field(default_factory=list)
     errors: int = 0
 
@@ -88,15 +94,49 @@ class BotRunner:
         self._last_manage = 0.0
         self._last_reconcile = 0.0
         self._last_digest_check = 0.0
+        self._last_wall: float | None = None
+        self._last_clock_offset: float | None = None
         self._stop = False
 
-    def tick(self, now: float | None = None) -> LoopStats:
+    def detect_suspend(self, wall: float, now: float) -> float | None:
+        """Seconds the loop was frozen, or None if under the threshold.
+
+        Two measures, the larger wins:
+        - idle wall time since the previous tick ENDED (a slow tick full of
+          CLI timeouts is not a suspend);
+        - growth of (wall - monotonic) since the previous tick STARTED. The
+          monotonic clock stops while the host sleeps and the wall clock is
+          stepped on resume, so this also catches a suspend that froze the
+          process mid-tick — which is how 2026-10-04 happened, inside a
+          `kraken futures paper positions` call.
+        """
+        offset = wall - now
+        idle = 0.0 if self._last_wall is None else wall - self._last_wall
+        jump = (0.0 if self._last_clock_offset is None
+                else offset - self._last_clock_offset)
+        self._last_clock_offset = offset
+        gap = max(idle, jump)
+        return gap if gap > self.intervals.suspend_gap_seconds else None
+
+    def tick(self, now: float | None = None, wall: float | None = None) -> LoopStats:
         """One iteration. Protection first, always.
 
         Each stage is isolated: a failure in strategy or reconciliation must
         not prevent the next protection sweep from running.
         """
         now = time.monotonic() if now is None else now
+        wall_given = wall is not None
+        wall = time.time() if wall is None else wall
+
+        suspended = self.detect_suspend(wall, now)
+        if suspended is not None:
+            self.stats.suspends += 1
+            log.warning(
+                f"loop was frozen for {_duration(suspended)} (host suspend?) — "
+                "running protection and reconciliation now",
+                extra={"action": "suspend_detected",
+                       "gap_seconds": round(suspended)},
+            )
 
         try:
             for symbol in self.manager.protection_sweep():
@@ -110,6 +150,18 @@ class BotRunner:
             log.error("protection sweep failed", exc_info=True,
                       extra={"action": "sweep_failed"})
         self.stats.sweeps += 1
+
+        if suspended is not None:
+            # After the sweep, so a slow alert never delays protection.
+            if self.config is not None:
+                send_alert(
+                    self.config.alert_telegram_bot_token,
+                    self.config.alert_telegram_chat_id,
+                    f"bot was suspended for {_duration(suspended)}, "
+                    "reconciling now",
+                )
+            # Force reconciliation this tick regardless of its cadence.
+            self._last_reconcile = now - self.intervals.reconcile_seconds
 
         if now - self._last_manage >= self.intervals.manage_seconds:
             self._last_manage = now
@@ -162,6 +214,9 @@ class BotRunner:
                 log.error(f"unresolved digest failed: {exc}", exc_info=True,
                           extra={"action": "digest_failed"})
 
+        # Measured at the END of the tick, so a slow tick (CLI timeouts) is not
+        # mistaken for a suspend — only time spent outside the loop counts.
+        self._last_wall = wall if wall_given else time.time()
         return self.stats
 
     def run_forever(self, *, on_tick=None) -> None:
@@ -174,3 +229,14 @@ class BotRunner:
 
     def stop(self) -> None:
         self._stop = True
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"

@@ -34,6 +34,7 @@ RAW = {i["symbol"]: i for i in json.loads(
 BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)
 SPECS = {CanonicalAsset.BTC: BTC}
 ENTRIES = (D(64000), D(63500))
+STOP = D(62000)  # 3.1% below the far entry: inside liquidation at 10x
 TPS = [D(65000), D(66000), D(67000), D(68000)]
 
 
@@ -71,7 +72,7 @@ def rig(tmp_path):
 
 def opened(engine, exchange, trade_id, uid, *, both=True):
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     exchange.fill(coids[0], plan.entries[0][1], D(64000))
     if both:

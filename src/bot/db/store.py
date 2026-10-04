@@ -464,6 +464,16 @@ class Store:
         with self.transaction() as conn:
             conn.execute(f"UPDATE trades SET {', '.join(sets)} WHERE id = ?", params)
 
+    def set_intent_leverage(self, trade_id: int, leverage: Decimal) -> None:
+        """Record the leverage the trade is opened at (the signal's request
+        after the cap and the stop-vs-liquidation guard). Recovery and
+        reconciliation treat it as the symbol's expected leverage."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE trades SET intent_leverage = ?, updated_at = ? WHERE id = ?",
+                (str(leverage), _now(), trade_id),
+            )
+
     def set_active_stop(
         self,
         trade_id: int,

@@ -40,7 +40,12 @@ from bot.models import (
     OrderStatus,
     TradeState,
 )
-from bot.sizing import calculate_size, split_entry_allocations, split_take_profits
+from bot.sizing import (
+    calculate_size,
+    estimated_liquidation_price,
+    split_entry_allocations,
+    split_take_profits,
+)
 
 D = Decimal
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -49,6 +54,7 @@ RAW = {
     for i in json.loads((FIXTURES / "futures_instruments.json").read_text())["instruments"]
 }
 BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)
+ETH = parse_instrument(RAW["PF_ETHUSD"], CanonicalAsset.ETH)
 
 # Marker for assertions paper physically cannot make (KRAKEN_NOTES 4.2).
 unverifiable_in_paper = pytest.mark.unverifiable_in_paper
@@ -275,11 +281,12 @@ def setup(config, store, tmp_path):
 
 # Entry prices used throughout. Sizes are ALWAYS derived via sizing.py.
 ENTRIES = (D(64000), D(63500))
+STOP = D(62000)  # 3.1% below the far entry: inside liquidation at 10x
 
 
 def planned(engine):
     return engine.plan_entries(
-        spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES, signal_leverage=D(10)
+        spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP
     )
 
 
@@ -307,11 +314,12 @@ def test_margin_is_split_not_contracts(setup):
     engine, *_ = setup
     plan = engine.plan_entries(
         spec=BTC, direction=Direction.LONG,
-        entry_prices=(D(64000), D(32000)), signal_leverage=D(10),
+        entry_prices=(D(64000), D(62000)), signal_leverage=D(10),
+        stop_loss=D(61500),
     )
     _, s1 = plan.entries[0]
     _, s2 = plan.entries[1]
-    assert s2 > s1  # same $15 buys more at half the price
+    assert s2 > s1  # same $15 buys more at the lower price
 
 
 # ==========================================================================
@@ -1275,7 +1283,7 @@ def test_signal_leverage_capped_before_reaching_the_exchange(setup, requested):
     signal would have been set on the account as 50x."""
     engine, exchange, store, trade_id, uid = setup
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(requested))
+                               entry_prices=ENTRIES, signal_leverage=D(requested), stop_loss=STOP)
     assert plan.leverage == D(10)
 
     engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
@@ -1285,7 +1293,7 @@ def test_signal_leverage_capped_before_reaching_the_exchange(setup, requested):
 def test_lower_signal_leverage_is_respected(setup):
     engine, exchange, store, trade_id, uid = setup
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(3))
+                               entry_prices=ENTRIES, signal_leverage=D(3), stop_loss=STOP)
     engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     assert exchange.leverage["PF_XBTUSD"] == D(3)
 
@@ -1293,7 +1301,7 @@ def test_lower_signal_leverage_is_respected(setup):
 def test_missing_signal_leverage_uses_configured_default(setup):
     engine, exchange, store, trade_id, uid = setup
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=None)
+                               entry_prices=ENTRIES, signal_leverage=None, stop_loss=STOP)
     assert plan.leverage == D(10)
 
 
@@ -1302,7 +1310,7 @@ def test_exchange_max_leverage_wins_when_lower(setup):
     engine, exchange, store, trade_id, uid = setup
     low = replace(BTC, max_leverage=D(4))
     plan = engine.plan_entries(spec=low, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     assert plan.leverage == D(4)
 
 
@@ -1570,3 +1578,124 @@ def test_realized_pnl_counts_a_stop_out_not_just_an_explicit_close(setup):
     assert pnl is not None, "a stop-out must produce a realised P&L"
     # LONG entered ~63750, stopped at 62500 -> a loss.
     assert pnl < 0
+
+
+# ==========================================================================
+# Stop vs liquidation (trade 8, 2026-10-04: ETH short 2497 at 10x, stop 2700,
+# liquidated at 2698.21 before the stop could trigger)
+# ==========================================================================
+
+TRADE8_ENTRIES = (D(2497), D(2625))
+
+
+def eth_trade(store, *, intent_leverage=D(10)):
+    msg = store.record_message(channel_id=-1, message_id=8, raw_text="ETH SHORT")
+    trade_id, uid = store.create_trade(
+        origin_message_row_id=msg, origin_channel_id=-1, origin_message_id=8,
+        asset="ETH", symbol="PF_ETHUSD", direction="SHORT",
+        intent_stop_loss=D(2700), intent_leverage=intent_leverage,
+    )
+    store.transition_trade(trade_id, TradeState.PARSED)
+    store.transition_trade(trade_id, TradeState.VALIDATED)
+    return trade_id, uid
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    sent = []
+    monkeypatch.setattr("bot.execution.engine.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    return sent
+
+
+def test_trade_8_regression_leverage_lowered_to_8x(setup, alerts):
+    engine, exchange, store, *_ = setup
+    exchange.mark = D(2500)
+    trade_id, uid = eth_trade(store)
+
+    plan = engine.plan_entries(spec=ETH, direction=Direction.SHORT,
+                               entry_prices=TRADE8_ENTRIES,
+                               signal_leverage=D(10), stop_loss=D(2700))
+
+    assert plan.leverage == D(8)
+    liq = estimated_liquidation_price(D(2497), plan.leverage, is_short=True)
+    assert liq - D(2700) >= D(2497) * D("0.01"), "stop inside liq with 1pt buffer"
+    allocations = split_entry_allocations(D(30))
+    assert tuple(s for _, s in plan.entries) == tuple(
+        calculate_size(margin_usd=m, leverage=D(8), price=p, spec=ETH,
+                       max_deviation_percent=D(5)).size
+        for p, m in zip(TRADE8_ENTRIES, allocations)
+    ), "sizes recomputed at the lowered leverage"
+    assert len(alerts) == 1 and alerts[0].startswith("LEVERAGE LOWERED PF_ETHUSD SHORT")
+    assert "2696.76" in alerts[0] and "8x" in alerts[0]
+
+    engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=ETH, plan=plan)
+    assert exchange.leverage["PF_ETHUSD"] == D(8)
+    assert store.get_trade(trade_id)["intent_leverage"] == "8"
+
+
+def test_guard_never_raises_leverage(setup, alerts):
+    engine, *_ = setup
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(20),
+                               stop_loss=D(63000))
+    assert plan.leverage == D(10)
+    assert alerts == []
+
+
+def test_guard_lowers_down_to_the_floor_inclusive(setup, alerts):
+    engine, *_ = setup
+    # 16% + 2% + 1% = 19% -> 1/0.19 = 5.26 -> 5x == MIN_LEVERAGE: allowed
+    plan = engine.plan_entries(spec=ETH, direction=Direction.SHORT,
+                               entry_prices=(D(2500),), signal_leverage=D(10),
+                               stop_loss=D(2900))
+    assert plan.leverage == D(5)
+
+
+def test_stop_beyond_liquidation_below_floor_is_refused(setup, alerts):
+    engine, exchange, *_ = setup
+    # 20% + 2% + 1% = 23% -> 4x < 5x floor
+    with pytest.raises(ExecutionRefused, match="STOP_BEYOND_LIQUIDATION"):
+        engine.plan_entries(spec=ETH, direction=Direction.SHORT,
+                            entry_prices=(D(2500),), signal_leverage=D(10),
+                            stop_loss=D(3000))
+    assert len(alerts) == 1 and alerts[0].startswith("REFUSED PF_ETHUSD SHORT")
+    assert "below the 5x floor" in alerts[0]
+    assert exchange.orders == {} and "PF_ETHUSD" not in exchange.leverage
+
+
+def test_open_trade_refuses_a_plan_whose_stop_is_beyond_liquidation(setup, alerts):
+    """Defence in depth: a hand-built plan at 10x with trade 8's stop."""
+    from dataclasses import replace
+    engine, exchange, store, *_ = setup
+    exchange.mark = D(2500)
+    trade_id, uid = eth_trade(store)
+    plan = replace(
+        engine.plan_entries(spec=ETH, direction=Direction.SHORT,
+                            entry_prices=TRADE8_ENTRIES, signal_leverage=D(10),
+                            stop_loss=D(2700)),
+        leverage=D(10),
+    )
+    with pytest.raises(ExecutionRefused, match="STOP_BEYOND_LIQUIDATION"):
+        engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=ETH, plan=plan)
+    assert "PF_ETHUSD" not in exchange.leverage
+    assert exchange.orders == {}
+
+
+def test_stop_on_wrong_side_is_refused(setup):
+    engine, *_ = setup
+    with pytest.raises(ExecutionRefused, match="STOP_WRONG_SIDE"):
+        engine.plan_entries(spec=ETH, direction=Direction.SHORT,
+                            entry_prices=(D(2500),), signal_leverage=D(10),
+                            stop_loss=D(2400))
+
+
+def test_expected_leverage_follows_the_active_trade(setup):
+    engine, exchange, store, *_ = setup
+    assert engine.expected_leverage("PF_ETHUSD") == D(10), "no trade: the cap"
+    trade_id, _ = eth_trade(store)
+    store.set_intent_leverage(trade_id, D(8))
+    assert engine.expected_leverage("PF_ETHUSD") == D(8)
+    store.set_intent_leverage(trade_id, D(50))
+    assert engine.expected_leverage("PF_ETHUSD") == D(10), "never above the cap"
+

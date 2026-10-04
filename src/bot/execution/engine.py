@@ -42,6 +42,9 @@ from ..sizing import (
     calculate_size,
     effective_leverage,
     check_sufficient_margin,
+    estimated_liquidation_price,
+    max_leverage_for_stop,
+    stop_distance,
     is_entry_stale,
     round_price_to_tick,
     split_entry_allocations,
@@ -81,6 +84,9 @@ class EntryPlan:
     entries: tuple[tuple[Decimal, Decimal], ...]  # (price, size)
     total_intended_size: Decimal
     total_intended_margin: Decimal
+    # Tick-snapped the way the stop order will be, so the liquidation check
+    # sees the price that will actually rest on the exchange.
+    stop_loss: Decimal
 
 
 class ExecutionEngine:
@@ -169,6 +175,7 @@ class ExecutionEngine:
         direction: Direction,
         entry_prices: tuple[Decimal, ...],
         signal_leverage: Decimal | None,
+        stop_loss: Decimal,
     ) -> EntryPlan:
         """Split margin 50/50 across the entry prices and size each one.
 
@@ -197,9 +204,15 @@ class ExecutionEngine:
         so a 50x signal would have reached the exchange as 50x. The cap now lives
         on the only path that can build a plan, and cannot be bypassed by a
         caller passing a bigger number.
+
+        The stop must trigger before liquidation, so leverage is lowered here
+        when the stop is too far away (trade 8: ETH short 2497, stop 2700,
+        liquidated at 10x before the stop could fire) — never raised, never
+        below MIN_LEVERAGE, otherwise refused as STOP_BEYOND_LIQUIDATION.
         """
         if not entry_prices:
             raise ExecutionRefused("NO_ENTRY_PRICES")
+        is_short = direction is Direction.SHORT
 
         # brief 9: min(signal, internal cap, exchange max)
         leverage = effective_leverage(
@@ -215,15 +228,25 @@ class ExecutionEngine:
                 extra={"symbol": spec.symbol, "action": "leverage_capped"},
             )
 
+        snapped_entries = tuple(
+            round_price_to_tick(p, spec.tick_size, round_up=is_short)
+            for p in entry_prices
+        )
+        # A short's stop rounds up, a long's down — away from entry, exactly
+        # as the protective stop is placed.
+        snapped_stop = round_price_to_tick(
+            stop_loss, spec.tick_size, round_up=is_short
+        )
+        leverage = self._leverage_for_stop(
+            spec.symbol, direction, snapped_entries, snapped_stop, leverage
+        )
+
         allocations = split_entry_allocations(
             self.config.trade_margin_usd, len(entry_prices)
         )
 
         entries: list[tuple[Decimal, Decimal]] = []
-        for price, margin in zip(entry_prices, allocations):
-            snapped = round_price_to_tick(
-                price, spec.tick_size, round_up=direction is Direction.SHORT
-            )
+        for snapped, margin in zip(snapped_entries, allocations):
             sized = calculate_size(
                 margin_usd=margin,
                 leverage=leverage,
@@ -241,7 +264,77 @@ class ExecutionEngine:
             entries=tuple(entries),
             total_intended_size=total_size,
             total_intended_margin=self.config.trade_margin_usd,
+            stop_loss=snapped_stop,
         )
+
+    def _leverage_for_stop(
+        self,
+        symbol: str,
+        direction: Direction,
+        entries: tuple[Decimal, ...],
+        stop: Decimal,
+        leverage: Decimal,
+    ) -> Decimal:
+        """Lower `leverage` until the stop sits inside liquidation + buffer."""
+        is_short = direction is Direction.SHORT
+        try:
+            safe = max_leverage_for_stop(
+                entries, stop, is_short=is_short,
+                buffer_percent=self.config.stop_liquidation_buffer_percent,
+            )
+        except SizingError as exc:
+            raise ExecutionRefused(exc.reason, exc.detail) from exc
+        if safe >= leverage:
+            return leverage
+
+        distance = stop_distance(entries, stop, is_short=is_short) * 100
+        far = min(entries) if is_short else max(entries)
+        liq_now = estimated_liquidation_price(far, leverage, is_short=is_short)
+        buffer = self.config.stop_liquidation_buffer_percent
+        if safe < self.config.min_leverage:
+            text = (
+                f"REFUSED {symbol} {direction.value}: stop {stop} is "
+                f"{distance:.2f}% from entry {far}; it needs <={safe}x to stay "
+                f"inside liquidation with a {buffer}pt buffer, below the "
+                f"{self.config.min_leverage}x floor. Not opened "
+                "(STOP_BEYOND_LIQUIDATION)."
+            )
+            log.warning(text, extra={"symbol": symbol,
+                                     "action": "stop_beyond_liquidation"})
+            send_alert(self.config.alert_telegram_bot_token,
+                       self.config.alert_telegram_chat_id, text)
+            raise ExecutionRefused("STOP_BEYOND_LIQUIDATION", text)
+
+        liq_safe = estimated_liquidation_price(far, safe, is_short=is_short)
+        margin_beyond = abs(liq_safe - stop) / far * 100
+        text = (
+            f"LEVERAGE LOWERED {symbol} {direction.value}: stop {stop} is "
+            f"{distance:.2f}% from entry {far}; at {leverage}x est. liquidation "
+            f"{liq_now:.2f} (MMR 2%) comes before the stop. Opening at {safe}x "
+            f"(est. liq {liq_safe:.2f}, {margin_beyond:.2f}% beyond stop)."
+        )
+        log.warning(text, extra={"symbol": symbol, "action": "leverage_lowered"})
+        send_alert(self.config.alert_telegram_bot_token,
+                   self.config.alert_telegram_chat_id, text)
+        return safe
+
+    def check_stop_inside_liquidation(self, plan: EntryPlan) -> None:
+        """Defence in depth at submission: a hand-built or stale plan whose
+        leverage would liquidate before its stop never reaches the exchange."""
+        try:
+            safe = max_leverage_for_stop(
+                tuple(p for p, _ in plan.entries), plan.stop_loss,
+                is_short=plan.direction is Direction.SHORT,
+                buffer_percent=self.config.stop_liquidation_buffer_percent,
+            )
+        except SizingError as exc:
+            raise ExecutionRefused(exc.reason, exc.detail) from exc
+        if plan.leverage > safe:
+            raise ExecutionRefused(
+                "STOP_BEYOND_LIQUIDATION",
+                f"plan carries {plan.leverage}x but stop {plan.stop_loss} is only "
+                f"inside liquidation up to {safe}x",
+            )
 
     def entry_deviation_limit(self, spec: InstrumentSpec) -> Decimal:
         """The stale-entry allowance for this instrument.
@@ -286,8 +379,27 @@ class ExecutionEngine:
         (recovery.py, reconcile.py) check available-margin headroom before
         calling this and log the before/after numbers — this method does not
         re-check, so call it only through those gated paths.
+
+        Re-asserts the symbol's EXPECTED leverage, not the cap: a trade the
+        stop-vs-liquidation guard opened at 8x must not be pushed back to 10x.
         """
-        return self.client.set_leverage_preference(symbol, self.config.max_leverage)
+        return self.client.set_leverage_preference(
+            symbol, self.expected_leverage(symbol)
+        )
+
+    def expected_leverage(self, symbol: str) -> Decimal:
+        """The leverage the account should hold for `symbol`.
+
+        The active trade's recorded intent_leverage (what open_trade set, after
+        the cap and the stop guard), never above the cap; the cap itself when
+        no trade is active. Callers compare against this BEFORE any
+        set-leverage: on a symbol with an open position set-leverage re-margins
+        it (KRAKEN_NOTES 1C), so an account already at this value is left alone.
+        """
+        trade = self.store.get_active_trade_for_symbol(symbol)
+        if trade is not None and trade["intent_leverage"]:
+            return min(Decimal(trade["intent_leverage"]), self.config.max_leverage)
+        return self.config.max_leverage
 
     # ------------------------------------------------------------------
     # Entry
@@ -329,7 +441,20 @@ class ExecutionEngine:
                 f"plan carries {plan.leverage}x but the hard cap is "
                 f"{self.config.max_leverage}x — refusing to set it",
             )
+        self.check_stop_inside_liquidation(plan)
         self.client.set_leverage_preference(spec.symbol, plan.leverage)
+        # The leverage actually opened at, which the guard may have lowered
+        # below the signal's. Recovery and reconciliation read it back as the
+        # symbol's expected leverage, so they never push it back to the cap.
+        requested = self.store.get_trade(trade_id)["intent_leverage"]
+        self.store.set_intent_leverage(trade_id, plan.leverage)
+        if requested is None or Decimal(requested) != plan.leverage:
+            self.store.append_event(
+                EventType.ORDER_INTENT_RECORDED,
+                f"leverage {plan.leverage}x (signal requested "
+                f"{requested + 'x' if requested else 'none'})",
+                trade_id=trade_id,
+            )
 
         self.store.transition_trade(trade_id, TradeState.WAITING_FOR_ENTRY)
 

@@ -68,6 +68,78 @@ def effective_leverage(
     return result
 
 
+# Maintenance margin rate used to ESTIMATE liquidation, in paper and live alike
+# so paper rehearses live exactly. Measured on the paper engine (kraken 0.4.1,
+# 2026-10-04): a flat 2% on every instrument and side — short liquidation is
+# entry * (1 + 1/L - 0.02), e.g. 2702.3 short at 10x -> 2918.484. Kraken's real
+# tier-1 rates are 0.5-1%, so on live this is conservative, which is the
+# direction cross-margin (portfolio-level liquidation) requires.
+LIQUIDATION_MAINTENANCE_RATE = Decimal("0.02")
+
+
+def liquidation_distance(
+    leverage: Decimal, maintenance_rate: Decimal = LIQUIDATION_MAINTENANCE_RATE
+) -> Decimal:
+    """Adverse move from entry, as a fraction, that liquidates at `leverage`."""
+    if leverage <= 0:
+        raise SizingError("LEVERAGE_INVALID", f"leverage {leverage} <= 0")
+    return Decimal(1) / leverage - maintenance_rate
+
+
+def estimated_liquidation_price(
+    entry: Decimal,
+    leverage: Decimal,
+    *,
+    is_short: bool,
+    maintenance_rate: Decimal = LIQUIDATION_MAINTENANCE_RATE,
+) -> Decimal:
+    distance = liquidation_distance(leverage, maintenance_rate)
+    return entry * (1 + distance) if is_short else entry * (1 - distance)
+
+
+def stop_distance(
+    entry_prices: tuple[Decimal, ...], stop_loss: Decimal, *, is_short: bool
+) -> Decimal:
+    """Worst-case adverse move from entry to stop, as a fraction.
+
+    Measured from the entry FARTHEST from the stop: if only that entry fills,
+    the position's average entry is that price, and the stop is as far away
+    as it can ever be. Any blend of fills sits closer to the stop.
+    """
+    if not entry_prices:
+        raise SizingError("NO_ENTRY_RANGE", "cannot measure stop distance")
+    if is_short:
+        far = min(entry_prices)
+        return (stop_loss - far) / far
+    far = max(entry_prices)
+    return (far - stop_loss) / far
+
+
+def max_leverage_for_stop(
+    entry_prices: tuple[Decimal, ...],
+    stop_loss: Decimal,
+    *,
+    is_short: bool,
+    buffer_percent: Decimal,
+    maintenance_rate: Decimal = LIQUIDATION_MAINTENANCE_RATE,
+) -> Decimal:
+    """Highest whole leverage at which the stop triggers before liquidation.
+
+    Requires liquidation_distance(L) >= stop_distance + buffer, i.e.
+    L <= 1 / (stop_distance + maintenance_rate + buffer). Trade 8 (ETH short
+    2497, stop 2700, 10x) was liquidated at 2698.21 because the stop sat
+    beyond the 2696.76 liquidation price; this returns 8 for it.
+    """
+    distance = stop_distance(entry_prices, stop_loss, is_short=is_short)
+    if distance <= 0:
+        raise SizingError(
+            "STOP_WRONG_SIDE",
+            f"stop {stop_loss} is not on the losing side of entries {entry_prices}",
+        )
+    required = distance + maintenance_rate + buffer_percent / 100
+    return (Decimal(1) / required).to_integral_value(rounding=ROUND_DOWN)
+
+
 def round_to_increment(value: Decimal, increment: Decimal) -> Decimal:
     """Round DOWN to a multiple of `increment`.
 

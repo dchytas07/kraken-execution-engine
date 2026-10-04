@@ -43,6 +43,7 @@ RAW = {i["symbol"]: i for i in json.loads(
 BTC = parse_instrument(RAW["PF_XBTUSD"], CanonicalAsset.BTC)
 SPECS = {CanonicalAsset.BTC: BTC}
 ENTRIES = (D(64000), D(63500))
+STOP = D(62000)  # 3.1% below the far entry: inside liquidation at 10x
 
 
 @pytest.fixture
@@ -77,7 +78,7 @@ def rig(tmp_path):
 
 def open_and_fill(engine, exchange, trade_id, uid, *, both=True):
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     exchange.fill(coids[0], plan.entries[0][1], D(64000))
     if both:
@@ -265,7 +266,7 @@ def test_orphan_position_is_reported_but_never_auto_closed(rig, caplog):
 def test_fills_missed_by_the_engine_are_recorded(rig):
     engine, exchange, store, rec, trade_id, uid = rig
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     # Fill without ever calling sync_entry_fills — simulates a crash after fill.
     exchange.fill(coids[0], plan.entries[0][1], D(64000))
@@ -279,7 +280,7 @@ def test_ambiguous_order_is_reported_not_guessed(rig):
     """Not resting and never filled: cancelled, rejected, or never placed."""
     engine, exchange, store, rec, trade_id, uid = rig
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     exchange.orders.clear()  # vanished with no fills
 
@@ -298,7 +299,7 @@ def test_ambiguous_order_is_reported_not_guessed(rig):
 def test_expired_entry_orders_cancelled_by_the_loop(rig):
     engine, exchange, store, rec, trade_id, uid = rig
     plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10))
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
     coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
     exchange.fill(coids[0], plan.entries[0][1], D(64000))
     engine.sync_entry_fills(trade_id)
@@ -580,7 +581,7 @@ def test_never_entered_trade_is_not_closed_by_the_flat_check(rig):
     engine.open_trade(
         trade_id=trade_id, trade_uid=uid, spec=BTC,
         plan=engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                                 entry_prices=ENTRIES, signal_leverage=D(10)),
+                                 entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP),
     )
     rec.run_once()
     assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
@@ -669,3 +670,78 @@ def test_orphan_size_change_relogs_immediately(rig, caplog):
     with caplog.at_level(logging.ERROR):
         rec.run_once()
     assert any("ORPHAN POSITION" in r.message for r in caplog.records)
+
+
+# ==========================================================================
+# Leverage of a guard-lowered trade (stop vs liquidation). KRAKEN_NOTES 1C:
+# set-leverage re-margins an open position, so it must never be called when
+# the account already holds the trade's leverage.
+# ==========================================================================
+
+WIDE_STOP = D(58240)  # 9% below 64000 -> the guard opens at 8x
+
+
+def open_at_8x(engine, exchange, trade_id, uid):
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(10),
+                               stop_loss=WIDE_STOP)
+    assert plan.leverage == D(8)
+    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    engine.sync_entry_fills(trade_id)
+    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
+                      direction=Direction.LONG, trigger_price=WIDE_STOP,
+                      position=exchange.get_position("PF_XBTUSD"))
+
+
+def count_set_leverage(exchange):
+    calls = []
+    original = exchange.set_leverage_preference
+
+    def spy(symbol, leverage):
+        calls.append((symbol, leverage))
+        return original(symbol, leverage)
+
+    exchange.set_leverage_preference = spy
+    return calls
+
+
+def test_open_position_at_trade_leverage_is_never_re_margined(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_at_8x(engine, exchange, trade_id, uid)
+    assert exchange.get_position("PF_XBTUSD") is not None
+    calls = count_set_leverage(exchange)
+
+    report = rec.run_once()
+
+    assert DiscrepancyKind.LEVERAGE_DRIFT not in kinds(report)
+    assert calls == [], "set-leverage on an open position already at intent"
+    assert exchange.leverage["PF_XBTUSD"] == D(8)
+
+
+def test_drift_on_a_guarded_trade_reasserts_its_leverage_not_the_cap(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_at_8x(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(10)
+    exchange.available = D(500)
+
+    report = rec.run_once()
+
+    assert DiscrepancyKind.LEVERAGE_DRIFT in kinds(report)
+    assert exchange.leverage["PF_XBTUSD"] == D(8)
+
+
+def test_guarded_trade_drift_still_refused_when_margin_thin(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    open_at_8x(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(10)
+    exchange.available = D(10)  # below TRADE_MARGIN_USD=30
+    calls = count_set_leverage(exchange)
+
+    report = rec.run_once()
+
+    drift = next(d for d in report.discrepancies
+                 if d.kind is DiscrepancyKind.LEVERAGE_DRIFT)
+    assert drift.repaired is False
+    assert calls == [] and exchange.leverage["PF_XBTUSD"] == D(10)
+
