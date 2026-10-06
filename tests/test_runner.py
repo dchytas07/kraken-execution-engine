@@ -213,3 +213,109 @@ def test_slow_tick_is_not_a_suspend(monkeypatch):
     r.tick(now=402, wall=1_302)
     assert sent == []
 
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat: pings only while the loop is genuinely healthy
+# ---------------------------------------------------------------------------
+
+URL = "https://hc.example/ping/not-a-real-uuid"
+T0 = 1000.0   # monotonic clocks do not start at 0; cadences fire on tick one
+
+
+@pytest.fixture
+def pings(monkeypatch):
+    sent = []
+    monkeypatch.setattr("bot.runner.send_heartbeat",
+                        lambda url: sent.append(url) or True)
+    return sent
+
+
+def hb_runner(**kw):
+    return BotRunner(manager=FakeManager(), reconciler=FakeReconciler(),
+                     intervals=LoopIntervals(**kw), healthcheck_url=URL)
+
+
+def test_healthy_loop_pings_about_every_three_minutes(pings):
+    r = hb_runner()
+    for i in range(0, 400, 2):          # 400s of 2s ticks
+        r.tick(now=T0 + i)
+    # t=0, 180, 360 -> three pings, not one per tick
+    assert pings == [URL] * 3
+    assert r.stats.heartbeats_sent == 3
+
+
+def test_no_url_means_no_ping(pings):
+    r = BotRunner(manager=FakeManager(), reconciler=FakeReconciler())
+    for i in range(0, 400, 2):
+        r.tick(now=T0 + i)
+    assert pings == []
+
+
+def test_failing_sweep_goes_silent_after_its_max_age(pings):
+    r = hb_runner()
+    r.tick(now=T0)
+    assert len(pings) == 1
+    r.manager.sweep_raises = True        # sweep now fails every tick
+    for t in range(2, 400, 2):
+        r.tick(now=T0 + t)
+    # last good sweep at 0s; 120s max age -> the 180s ping must not happen
+    assert len(pings) == 1
+
+
+def test_stale_reconcile_goes_silent_even_if_sweeps_are_fine(pings):
+    r = hb_runner()
+    r.tick(now=T0)
+    assert len(pings) == 1
+    r.reconciler.run_once = lambda: (_ for _ in ()).throw(RuntimeError("x"))
+    for t in range(2, 700, 2):
+        r.tick(now=T0 + t)
+    # last good reconcile at 0s; 300s max age -> 180s ping ok, 360s+ not
+    assert len(pings) == 2
+
+
+def test_hung_loop_does_not_ping(pings):
+    """A frozen bot never calls tick(); nothing else may ping on its behalf."""
+    r = hb_runner()
+    r.tick(now=T0)
+    assert len(pings) == 1
+    # no further ticks at all
+    assert r.loop_is_healthy(T0)
+    assert not r.loop_is_healthy(T0 + 10_000.0)
+    assert len(pings) == 1
+
+
+def test_never_reconciled_is_unhealthy(pings):
+    r = hb_runner()
+    assert not r.loop_is_healthy(T0)
+
+
+def test_recovery_resumes_pings(pings):
+    r = hb_runner()
+    r.manager.sweep_raises = True
+    for t in range(0, 300, 2):
+        r.tick(now=T0 + t)
+    assert pings == []
+    r.manager.sweep_raises = False
+    for t in range(300, 520, 2):
+        r.tick(now=T0 + t)
+    assert len(pings) >= 1
+
+
+def test_ping_failure_is_swallowed_by_the_loop(monkeypatch):
+    """send_heartbeat itself never raises; even if it did, protection and the
+    returned stats must be unaffected."""
+    calls = []
+
+    def boom(url):
+        calls.append(url)
+        return False                      # failed ping
+
+    monkeypatch.setattr("bot.runner.send_heartbeat", boom)
+    r = hb_runner()
+    r.tick(now=T0)
+    r.tick(now=T0 + 2.0)
+    assert calls == [URL]                 # attempt cadence, not retry-every-tick
+    assert r.stats.heartbeats_sent == 0
+    assert r.stats.errors == 0
+    assert r.manager.sweeps == 2

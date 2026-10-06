@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 from .alerting import send_alert, send_daily_summary, send_unresolved_digest
 from .execution.manager import PROTECTION_SLA_SECONDS, TradeManager
+from .heartbeat import send_heartbeat
 from .logging_setup import get_logger
 from .reconcile import Reconciler
 
@@ -48,6 +49,15 @@ class LoopIntervals:
     # ETH short unwatched while its stop level came and went. Monotonic time
     # does not advance across a suspend, so this is measured on the wall clock.
     suspend_gap_seconds: float = 120.0
+    # Heartbeat: ping the external monitor this often, but only while healthy.
+    # "Healthy" = a protection sweep finished OK within sweep_max_age AND a
+    # reconciliation finished OK within reconcile_max_age. The sweep runs every
+    # tick but one tick can run a full step_all (17-50s measured) plus a
+    # reconcile, so 120s is ~2x the worst tick. Reconciliation is nominally 60s,
+    # so 300s tolerates a few slow/failed passes before going silent.
+    heartbeat_seconds: float = 180.0
+    sweep_max_age_seconds: float = 120.0
+    reconcile_max_age_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         # The sweep is what delivers the SLA, so it must have room for several
@@ -67,6 +77,7 @@ class LoopStats:
     digests_sent: int = 0
     summaries_sent: int = 0
     suspends: int = 0
+    heartbeats_sent: int = 0
     protected: list[str] = field(default_factory=list)
     errors: int = 0
 
@@ -82,6 +93,7 @@ class BotRunner:
         intervals: LoopIntervals | None = None,
         store=None,
         config=None,
+        healthcheck_url: str | None = None,
     ) -> None:
         self.manager = manager
         self.reconciler = reconciler
@@ -90,7 +102,12 @@ class BotRunner:
         # so a caller that does not want alerting simply omits them.
         self.store = store
         self.config = config
+        self.healthcheck_url = healthcheck_url
         self.stats = LoopStats()
+        # Stamped only on SUCCESS, so a stage that keeps raising goes stale.
+        self._last_sweep_ok: float | None = None
+        self._last_reconcile_ok: float | None = None
+        self._last_heartbeat = float("-inf")
         self._last_manage = 0.0
         self._last_reconcile = 0.0
         self._last_digest_check = 0.0
@@ -117,6 +134,20 @@ class BotRunner:
         self._last_clock_offset = offset
         gap = max(idle, jump)
         return gap if gap > self.intervals.suspend_gap_seconds else None
+
+    def loop_is_healthy(self, now: float) -> bool:
+        """True only if sweep and reconcile both completed OK recently.
+
+        Never-succeeded counts as unhealthy, so a bot that cannot finish its
+        first reconciliation never pings.
+        """
+        iv = self.intervals
+        return (
+            self._last_sweep_ok is not None
+            and now - self._last_sweep_ok <= iv.sweep_max_age_seconds
+            and self._last_reconcile_ok is not None
+            and now - self._last_reconcile_ok <= iv.reconcile_max_age_seconds
+        )
 
     def tick(self, now: float | None = None, wall: float | None = None) -> LoopStats:
         """One iteration. Protection first, always.
@@ -145,6 +176,7 @@ class BotRunner:
                     f"protection sweep placed a stop on {symbol}",
                     extra={"symbol": symbol, "action": "sweep_protected"},
                 )
+            self._last_sweep_ok = now
         except Exception:
             self.stats.errors += 1
             log.error("protection sweep failed", exc_info=True,
@@ -177,6 +209,7 @@ class BotRunner:
             self._last_reconcile = now
             try:
                 self.reconciler.run_once()
+                self._last_reconcile_ok = now
             except Exception:
                 self.stats.errors += 1
                 log.error("reconciliation failed", exc_info=True,
@@ -213,6 +246,18 @@ class BotRunner:
                 self.stats.errors += 1
                 log.error(f"unresolved digest failed: {exc}", exc_info=True,
                           extra={"action": "digest_failed"})
+
+        # Last, so a slow ping can never delay protection or reconciliation.
+        # Cadence is by ATTEMPT: a dead monitor URL must not be retried (and
+        # block for its timeout) on every 2s tick.
+        if (
+            self.healthcheck_url
+            and now - self._last_heartbeat >= self.intervals.heartbeat_seconds
+            and self.loop_is_healthy(now)
+        ):
+            self._last_heartbeat = now
+            if send_heartbeat(self.healthcheck_url):
+                self.stats.heartbeats_sent += 1
 
         # Measured at the END of the tick, so a slow tick (CLI timeouts) is not
         # mistaken for a suspend — only time spent outside the loop counts.

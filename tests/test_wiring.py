@@ -111,6 +111,10 @@ SAFETY_FUNCTIONS = {
     "expected_leverage": "leverage drift/reassert compares against the trade's leverage, not the cap",
     # Host suspend (2026-10-04: 12h WSL suspend left a position unwatched).
     "detect_suspend": "frozen-loop detection: alert, then protect and reconcile at once",
+    # Dead-man's-switch: a heartbeat nothing sends is a monitor that never
+    # fires on a healthy bot and tells you nothing on a dead one.
+    "send_heartbeat": "external dead-man's-switch ping from the run loop",
+    "loop_is_healthy": "heartbeat gate: pings only while sweep and reconcile are fresh",
 }
 
 # Properties are accessed without parentheses, so they need their own check.

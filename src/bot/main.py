@@ -232,6 +232,7 @@ async def run_forever(config: Config, runtime: Runtime) -> int:
     runner = BotRunner(
         manager=runtime.manager, reconciler=runtime.reconciler,
         store=runtime.store, config=config,
+        healthcheck_url=config.healthcheck_url,
     )
 
     stopping = asyncio.Event()

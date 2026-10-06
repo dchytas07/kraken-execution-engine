@@ -112,6 +112,8 @@ class Config:
 
     alert_telegram_bot_token: str | None
     alert_telegram_chat_id: str | None
+    # Optional dead-man's-switch URL (HEALTHCHECK_URL). None = heartbeat off.
+    healthcheck_url: str | None
 
     kill_switch_path: Path
     db_path: Path
@@ -366,6 +368,8 @@ def load_config(
     # sent, logged as a warning" rather than a ConfigError.
     alert_telegram_bot_token = _raw(env, "ALERT_TELEGRAM_BOT_TOKEN")
     alert_telegram_chat_id = _raw(env, "ALERT_TELEGRAM_CHAT_ID")
+    # Optional and never fatal: monitoring must not be able to stop the bot.
+    healthcheck_url = _raw(env, "HEALTHCHECK_URL")
 
     # -- paths --------------------------------------------------------------
     kill_switch_path = Path(_raw(env, "KILL_SWITCH_PATH") or "./KILL_SWITCH")
@@ -401,6 +405,7 @@ def load_config(
         telegram_session_path=telegram_session_path,
         alert_telegram_bot_token=alert_telegram_bot_token,
         alert_telegram_chat_id=alert_telegram_chat_id,
+        healthcheck_url=healthcheck_url,
         kill_switch_path=kill_switch_path,
         db_path=db_path,
         log_path=log_path,
@@ -426,5 +431,6 @@ def collect_secrets(env: dict[str, str] | None = None) -> set[str]:
         "TELEGRAM_API_HASH",
         "LIVE_TRADING_ACK",
         "ALERT_TELEGRAM_BOT_TOKEN",
+        "HEALTHCHECK_URL",
     )
     return {v.strip() for k in keys if (v := source.get(k)) and len(v.strip()) >= 8}
