@@ -173,3 +173,65 @@ def test_unreadable_paper_state_is_reported_not_raised(rig):
     state.write_text("{ this is not json")
     out = status_mod.build_status(config)   # must not raise
     assert "UNAVAILABLE" in out
+
+
+# ---------------------------------------------------------------------------
+# State-file path resolution: same as kraken-cli, per OS
+# ---------------------------------------------------------------------------
+
+def test_linux_path_is_dot_config(tmp_path):
+    p = status_mod.paper_state_path({"HOME": str(tmp_path)}, "linux")
+    assert p == tmp_path / ".config/kraken/paper/futures_state.json"
+
+
+def test_linux_honours_absolute_xdg_config_home(tmp_path):
+    env = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    assert status_mod.paper_state_path(env, "linux") == (
+        tmp_path / "xdg/kraken/paper/futures_state.json")
+
+
+def test_linux_ignores_relative_xdg_config_home(tmp_path):
+    env = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": "relative/dir"}
+    assert status_mod.paper_state_path(env, "linux") == (
+        tmp_path / ".config/kraken/paper/futures_state.json")
+
+
+def test_macos_path_is_application_support(tmp_path):
+    p = status_mod.paper_state_path({"HOME": str(tmp_path)}, "darwin")
+    assert p == (tmp_path
+                 / "Library/Application Support/kraken/paper/futures_state.json")
+
+
+def test_windows_path_uses_appdata():
+    p = status_mod.paper_state_path({"HOME": "/h", "APPDATA": "/appdata"}, "win32")
+    assert p == Path("/appdata/kraken/paper/futures_state.json")
+
+
+def test_default_resolution_is_used_when_no_override(monkeypatch, tmp_path):
+    state = tmp_path / ".config/kraken/paper/futures_state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text('{"positions": [], "open_orders": []}')
+    monkeypatch.setattr(status_mod, "PAPER_STATE", None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(status_mod.sys, "platform", "linux")
+    got, note = status_mod._read_paper_state()
+    assert got == {"positions": [], "open_orders": []} and note == ""
+
+
+def test_reading_state_is_lock_free_and_non_mutating(monkeypatch, tmp_path):
+    """Read-only: no lock file created, state file bytes and mtime untouched,
+    and no `kraken ... paper` subprocess is spawned."""
+    state = tmp_path / ".config/kraken/paper/futures_state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text('{"positions": [], "open_orders": []}')
+    before = (state.read_bytes(), state.stat().st_mtime_ns)
+    monkeypatch.setattr(status_mod, "PAPER_STATE", None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(status_mod.sys, "platform", "linux")
+    monkeypatch.setattr(status_mod.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned")))
+    status_mod._read_paper_state()
+    assert sorted(p.name for p in state.parent.iterdir()) == ["futures_state.json"]
+    assert (state.read_bytes(), state.stat().st_mtime_ns) == before

@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -34,9 +35,32 @@ from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
-PAPER_STATE = Path(
-    "~/Library/Application Support/kraken/paper/futures_state.json"
-).expanduser()
+# Test/operator override; None means "resolve like kraken-cli does".
+PAPER_STATE: Path | None = None
+
+
+def paper_state_path(env: dict[str, str] | None = None,
+                     platform: str | None = None) -> Path:
+    """Where kraken-cli keeps the futures paper state on this OS.
+
+    Mirrors the Rust `dirs::config_dir()` kraken-cli uses:
+      Linux    $XDG_CONFIG_HOME (if absolute) else ~/.config
+      macOS    ~/Library/Application Support
+      Windows  %APPDATA%
+    then `kraken/paper/futures_state.json`. Pure path arithmetic: nothing is
+    opened, created or locked here.
+    """
+    env = os.environ if env is None else env
+    platform = sys.platform if platform is None else platform
+    home = Path(env.get("HOME") or Path.home())
+    if platform == "darwin":
+        base = home / "Library" / "Application Support"
+    elif platform.startswith("win"):
+        base = Path(env.get("APPDATA") or home / "AppData" / "Roaming")
+    else:
+        xdg = env.get("XDG_CONFIG_HOME", "")
+        base = Path(xdg) if xdg and Path(xdg).is_absolute() else home / ".config"
+    return base / "kraken" / "paper" / "futures_state.json"
 
 UNRESOLVED = ("REQUIRES_REVIEW", "SAFE_ERROR")
 _TERMINAL = ("CLOSED", "CANCELLED", "FAILED")
@@ -105,11 +129,12 @@ def _read_paper_state() -> tuple[dict | None, str]:
     Returns (state, note). A parse failure is reported, never raised: the
     file can be read mid-write, and a status command must not crash for it.
     """
-    if not PAPER_STATE.exists():
-        return None, f"paper state file not found at {PAPER_STATE}"
+    path = PAPER_STATE or paper_state_path()
+    if not path.exists():
+        return None, f"paper state file not found at {path}"
     for attempt in (1, 2):
         try:
-            return json.loads(PAPER_STATE.read_text()), ""
+            return json.loads(path.read_text()), ""
         except (json.JSONDecodeError, OSError) as exc:
             if attempt == 2:
                 return None, f"could not read paper state ({exc})"
