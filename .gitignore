@@ -24,3 +24,6 @@ dist/
 # Raw dump of fetched channel messages (regenerable; keeps the repo free of
 # bulk third-party channel content).
 .review_cache.json
+
+# Raw channel history pulled by tools/fetch_corpus.py (bulk third-party content).
+corpus/

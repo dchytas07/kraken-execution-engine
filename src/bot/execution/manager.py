@@ -332,6 +332,50 @@ class TradeManager:
                 outcomes[trade_id] = False
         return outcomes
 
+    def cancel_unentered_trade(self, trade_id: int) -> tuple[bool, str]:
+        """Cancel a trade that never entered. (done, why).
+
+        Only for a trade with NO exposure: if any entry has filled, or the
+        exchange shows a position, this refuses and the caller escalates to a
+        human, because ending a trade that holds a position is a close, not a
+        cancel. State is refreshed from the exchange first, so a fill that
+        landed since the last observation is seen rather than cancelled
+        around.
+        """
+        trade = self.store.get_trade(trade_id)
+        if trade is None:
+            return False, "no such trade"
+        state = TradeState(trade["state"])
+        if state is not TradeState.WAITING_FOR_ENTRY:
+            return False, f"trade is {state.value}, not waiting for entry"
+
+        position = self.engine.sync_entry_fills(trade_id)
+        if position is not None and not position.is_flat:
+            return False, f"an entry already filled ({position.size} held)"
+
+        self.engine.cancel_remaining_entries(trade_id)
+
+        rows = self.store.orders_for_trade(trade_id, OrderPurpose.ENTRY)
+        if any(Decimal(r["filled_quantity"] or 0) > 0 for r in rows):
+            return False, "an entry order filled while cancelling"
+        if any(not OrderStatus(r["status"]).is_final for r in rows):
+            return False, "an entry order could not be cancelled"
+
+        self.store.transition_trade(
+            trade_id, TradeState.CANCELLED, "cancelled by the channel"
+        )
+        self.store.append_event(
+            EventType.ORDER_CANCELLED,
+            "trade cancelled before entry on the channel's instruction",
+            trade_id=trade_id,
+        )
+        log.warning(
+            f"trade {trade_id} {trade['symbol']} cancelled before entry",
+            extra={"trade_id": trade_id, "symbol": trade["symbol"],
+                   "action": "trade_cancelled_by_channel"},
+        )
+        return True, "entries cancelled, no exposure"
+
     def resolve_close_targets(
         self,
         *,

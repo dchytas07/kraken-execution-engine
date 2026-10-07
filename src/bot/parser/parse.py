@@ -36,6 +36,12 @@ def _detect_direction(plain: str) -> Direction | None:
     return None
 
 
+def _canon(value) -> str:
+    """Numeric text with no trailing zeros: '68000.00000000' and '68000' are the
+    same price, and a repost that only drops the padding must still collide."""
+    return format(value.normalize(), "f")
+
+
 def signal_fingerprint(
     asset: CanonicalAsset | None,
     direction: Direction | None,
@@ -55,9 +61,9 @@ def signal_fingerprint(
     parts = [
         asset.value,
         direction.value,
-        "|".join(str(p) for p in entry_range),
-        "|".join(str(p) for p in take_profits),
-        str(stop_loss) if stop_loss is not None else "",
+        "|".join(_canon(p) for p in entry_range),
+        "|".join(_canon(p) for p in take_profits),
+        _canon(stop_loss) if stop_loss is not None else "",
     ]
     return hashlib.sha256("~".join(parts).encode()).hexdigest()[:32]
 

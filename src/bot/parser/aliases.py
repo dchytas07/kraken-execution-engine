@@ -42,7 +42,8 @@ _ALIASES: dict[CanonicalAsset, frozenset[str]] = {
          "dogeperp", "dogeusdperp"}
     ),
     CanonicalAsset.XAU: frozenset(
-        {"xau", "gold", "xauusd", "xauusdt", "gld", "xaut", "xautusd"}
+        {"xau", "gold", "xauusd", "xauusdt", "xauusdc", "gld", "xaut",
+         "xautusd", "xautusdt", "goldusd", "goldusdt", "goldusdc"}
     ),
 }
 

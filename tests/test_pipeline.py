@@ -213,25 +213,37 @@ def test_ambiguous_close_refused_and_nothing_closes(pipe):
     assert store.get_message(-100, 2)["execution_decision"] == "REQUIRES_REVIEW"
 
 
-def test_partial_close_reduces_but_does_not_close(pipe):
+def test_partial_close_is_never_automated(pipe):
+    """A partial close alerts a human and touches nothing.
+
+    Superseded the old 'partial close reduces the position' behaviour: across
+    the channel's real history every message the parser read as PARTIAL_CLOSE
+    was prose ('Sell 50% holdings now at $9170', 'I recommend to take 50%
+    profits on DOT!'), none a command to this bot.
+    """
     pipeline, store, exchange, _ = pipe
     trade_id = open_a_trade(pipeline, exchange)
     before = exchange.get_position("PF_XBTUSD").size
-    fill_closes(exchange)
 
-    pipeline.handle_message(channel_id=-100, message_id=2, text="Close BTC 50%")
-    after = exchange.get_position("PF_XBTUSD")
-    if after is not None:
-        assert after.size < before
-        assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
+    result = pipeline.handle_message(channel_id=-100, message_id=2,
+                                     text="Close BTC 50%")
+
+    assert not result.accepted
+    assert result.action == "REVIEW_ALERT"
+    assert exchange.get_position("PF_XBTUSD").size == before
+    assert store.get_trade(trade_id)["state"] != TradeState.CLOSED.value
+    assert store.get_message(-100, 2)["execution_decision"] == "REQUIRES_REVIEW"
 
 
-def test_sl_update_is_flagged_for_review_not_silently_dropped(pipe):
+def test_ambiguous_sl_instruction_is_flagged_for_review_not_silently_dropped(pipe):
+    """'Move SL to entry' names no level: breakeven by instruction would bypass
+    brief 15 (breakeven only after a CONFIRMED TP2 fill), so a human decides."""
     pipeline, store, exchange, _ = pipe
     open_a_trade(pipeline, exchange)
     result = pipeline.handle_message(channel_id=-100, message_id=2,
-                                     text="Move BTC SL to 63000")
+                                     text="Move BTC SL to entry")
     assert not result.accepted
+    assert result.action == "REVIEW_ALERT"
     assert store.get_message(-100, 2)["execution_decision"] == "REQUIRES_REVIEW"
 
 

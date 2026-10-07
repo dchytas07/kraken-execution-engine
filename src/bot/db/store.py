@@ -218,6 +218,100 @@ class Store:
                 ),
             )
 
+    # -- message versions --------------------------------------------------
+
+    @staticmethod
+    def text_hash(text: str) -> str:
+        import hashlib
+
+        return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:32]
+
+    def record_message_version(
+        self,
+        *,
+        message_row_id: int,
+        channel_id: int,
+        message_id: int,
+        text: str,
+        message_class: str,
+        action: str,
+        reason: str,
+        media: str | None = None,
+        edit_date: str | None = None,
+        reply_to_message_id: int | None = None,
+        trade_id: int | None = None,
+    ) -> tuple[int, int]:
+        """Append the next version of a message. Returns (row id, version).
+
+        Version 1 is the original; each text change appends the next number.
+        """
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS v FROM message_versions "
+                "WHERE channel_id = ? AND message_id = ?",
+                (channel_id, message_id),
+            ).fetchone()
+            version = row["v"] + 1
+            cur = conn.execute(
+                """INSERT INTO message_versions
+                   (message_row_id, channel_id, message_id, version, recorded_at,
+                    edit_date, text, text_hash, media, reply_to_message_id,
+                    message_class, action, reason, trade_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_row_id, channel_id, message_id, version, _now(),
+                 edit_date, text, self.text_hash(text), media,
+                 reply_to_message_id, message_class, action, reason, trade_id),
+            )
+            return cur.lastrowid, version
+
+    def set_version_outcome(
+        self, version_row_id: int, *, action: str, reason: str,
+        trade_id: int | None = None,
+    ) -> None:
+        """Replace the PLANNED action with what actually happened."""
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE message_versions SET action = ?, reason = ?,
+                          trade_id = COALESCE(?, trade_id) WHERE id = ?""",
+                (action, reason, trade_id, version_row_id),
+            )
+
+    def latest_message_version(self, channel_id: int, message_id: int):
+        return self._conn.execute(
+            """SELECT * FROM message_versions
+               WHERE channel_id = ? AND message_id = ?
+               ORDER BY version DESC LIMIT 1""",
+            (channel_id, message_id),
+        ).fetchone()
+
+    def message_versions(self, channel_id: int, message_id: int) -> list[sqlite3.Row]:
+        return list(self._conn.execute(
+            """SELECT * FROM message_versions
+               WHERE channel_id = ? AND message_id = ? ORDER BY version""",
+            (channel_id, message_id),
+        ).fetchall())
+
+    def trade_for_origin_message(
+        self, channel_id: int, message_id: int
+    ) -> sqlite3.Row | None:
+        """The trade a message opened, if any (newest wins)."""
+        return self._conn.execute(
+            """SELECT * FROM trades
+               WHERE origin_channel_id = ? AND origin_message_id = ?
+               ORDER BY id DESC LIMIT 1""",
+            (channel_id, message_id),
+        ).fetchone()
+
+    def update_intent_stop(self, trade_id: int, stop: Decimal) -> None:
+        """Latest stop INSTRUCTION. Reconciliation rebuilds a missing stop from
+        intent, so a tightened stop must be reflected here or a repair would
+        quietly restore the wider original."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE trades SET intent_stop_loss = ?, updated_at = ? WHERE id = ?",
+                (str(stop), _now(), trade_id),
+            )
+
     def find_by_fingerprint(self, fingerprint: str) -> list[sqlite3.Row]:
         return list(
             self._conn.execute(

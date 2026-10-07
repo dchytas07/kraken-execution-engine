@@ -298,6 +298,34 @@ class OrderStatus(StrEnum):
         )
 
 
+class MessageClass(StrEnum):
+    """What an inbound message IS, independent of what the bot does about it.
+
+    Coarser than MessageType on purpose: MessageType is the parser's
+    fine-grained read, this is the operational taxonomy every stored message
+    carries (and every edit of it).
+    """
+
+    NEW_SIGNAL = "NEW_SIGNAL"
+    SIGNAL_UPDATE = "SIGNAL_UPDATE"              # SL / TP / entry change
+    CANCEL_OR_CLOSE = "CANCEL_OR_CLOSE"
+    RESULT_REPORT = "RESULT_REPORT"              # informational: TP hit, stop hit
+    CHATTER = "CHATTER"
+    UNPARSEABLE_SIGNAL_LIKE = "UNPARSEABLE_SIGNAL_LIKE"  # images, odd formats
+
+
+class MessageAction(StrEnum):
+    """What the bot did (or, from the classifier, intends to try)."""
+
+    OPEN_TRADE = "OPEN_TRADE"
+    UPDATE_STOP = "UPDATE_STOP"
+    CLOSE_TRADE = "CLOSE_TRADE"
+    CANCEL_TRADE = "CANCEL_TRADE"
+    LOG_ONLY = "LOG_ONLY"
+    REVIEW_ALERT = "REVIEW_ALERT"    # no trade; a human is told
+    REFUSED = "REFUSED"              # understood, deliberately not acted on
+
+
 class ExecutionDecision(StrEnum):
     """What the system decided to do with a message. Every stored message gets
     one — silence is never an outcome."""
@@ -339,6 +367,11 @@ class RejectionReason(StrEnum):
     INSTRUMENT_SPEC_UNAVAILABLE = "INSTRUMENT_SPEC_UNAVAILABLE"
     EXCHANGE_ERROR = "EXCHANGE_ERROR"
     NOT_EXECUTABLE_TYPE = "NOT_EXECUTABLE_TYPE"
+    # Understood as an instruction, but not safe or not supported to act on
+    # automatically: a human is alerted (conditional close, partial close,
+    # TP4 hold, entry adjust, image, ambiguous target, edit of a live signal).
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+    STOP_UPDATE_REFUSED = "STOP_UPDATE_REFUSED"
 
 
 class EventType(StrEnum):
@@ -346,6 +379,8 @@ class EventType(StrEnum):
 
     MESSAGE_RECEIVED = "MESSAGE_RECEIVED"
     MESSAGE_PARSED = "MESSAGE_PARSED"
+    MESSAGE_EDITED = "MESSAGE_EDITED"
+    STOP_UPDATED = "STOP_UPDATED"
     SIGNAL_VALIDATED = "SIGNAL_VALIDATED"
     SIGNAL_REJECTED = "SIGNAL_REJECTED"
     TRADE_CREATED = "TRADE_CREATED"

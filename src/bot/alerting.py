@@ -266,6 +266,8 @@ def notify_trade_event(
             "tp_filled": "🎯 Take-profit hit",
             "breakeven": "🛡️ Stop moved to breakeven",
             "closed": "✅ Trade closed",
+            "stop_updated": "🛡️ Stop tightened on the channel's update",
+            "cancelled": "🚫 Trade cancelled",
         }.get(kind, kind)
 
         bits = [f"{greeting(now)} {headline}", "", f"  {symbol}"]
@@ -290,6 +292,55 @@ def notify_trade_event(
             f"trade notification failed: {exc}",
             extra={"action": "notify_failed", "kind": kind, "symbol": symbol},
         )
+        return False
+
+
+def send_review_alert(
+    config,
+    *,
+    channel_id: int,
+    message_id: int,
+    version: int,
+    message_class: str,
+    reason: str,
+    text: str,
+    media: str | None = None,
+    trade_id: int | None = None,
+) -> bool:
+    """Tell a human a message needs a decision the bot refuses to make.
+
+    Sent for every REVIEW_ALERT outcome: an image that may hold a signal, a
+    conditional or partial close, a TP4-hold note, an edit of a live signal, an
+    ambiguous target. No trade was placed and none will be. Never raises: the
+    message is already persisted, so a failed send loses visibility, not data.
+    """
+    try:
+        cid = str(channel_id)
+        link = (f"https://t.me/c/{cid[4:]}/{message_id}"
+                if cid.startswith("-100") else f"{channel_id}/{message_id}")
+        snippet = (text or "").strip()
+        if len(snippet) > 500:
+            snippet = snippet[:500] + "…"
+        bits = [
+            f"{greeting()} ⚠️ Needs your review — no trade placed",
+            "",
+            f"  {message_class}  ·  message {message_id} v{version}",
+            f"  why: {reason}",
+        ]
+        if trade_id is not None:
+            bits.append(f"  trade: #{trade_id}")
+        if media:
+            bits.append(f"  media: {media}")
+        bits += [f"  {link}", "", snippet or "(no text)"]
+        return send_alert(
+            config.alert_telegram_bot_token,
+            config.alert_telegram_chat_id,
+            "\n".join(bits),
+        )
+    except Exception as exc:  # noqa: BLE001 — alerting must never crash intake
+        log.warning(f"review alert failed: {exc}",
+                    extra={"action": "review_alert_failed",
+                           "message_id": message_id})
         return False
 
 

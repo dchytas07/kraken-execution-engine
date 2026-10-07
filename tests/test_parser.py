@@ -538,3 +538,23 @@ def test_xrp_and_doge_no_longer_reported_unsupported():
         asset, unsupported = resolve_asset(text)
         assert asset is expected
         assert not unsupported
+
+
+def test_fingerprint_ignores_trailing_zero_padding():
+    """REGRESSION: the channel pads prices ('68000.00000000') and sometimes
+    drops the padding on an edit ('68000'). The fingerprint hashed str(Decimal),
+    so the same signal escaped duplicate detection (brief 23)."""
+    from bot.parser.parse import fingerprint_for, parse_message
+
+    padded = ("➡️ LONG BTCUSDT \n\n❇️ Entry: 64000.00000000 - 63500.00000000\n\n"
+              "☑️ Target 1: 65000.00000000\n\n☑️ Target 2: 66000.00000000\n\n"
+              "☑️ Target 3: 67000.00000000\n\n☑️ Target 4: 68000.00000000\n\n"
+              "⛔ Stoploss: 62500.00000000\n\n💫 Leverage : 10x")
+    bare = (padded.replace("64000.00000000", "64000").replace("68000.00000000", "68000")
+            .replace("62500.00000000", "62500"))
+    a = parse_message(channel_id=1, message_id=1, text=padded)
+    b = parse_message(channel_id=1, message_id=2, text=bare)
+    assert fingerprint_for(a) == fingerprint_for(b)
+    c = parse_message(channel_id=1, message_id=3,
+                      text=padded.replace("62500.00000000", "62400.00000000"))
+    assert fingerprint_for(a) != fingerprint_for(c), "a different stop is a different signal"

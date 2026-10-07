@@ -32,6 +32,25 @@ from ..pipeline import SignalPipeline
 log = get_logger(__name__)
 
 
+def media_kind(message) -> str | None:
+    """What kind of attachment a Telethon message carries, if any."""
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "poll", None):
+        return "poll"
+    if getattr(message, "sticker", None):
+        return "sticker"
+    if getattr(message, "video", None) or getattr(message, "gif", None):
+        return "video"
+    if getattr(message, "voice", None) or getattr(message, "audio", None):
+        return "audio"
+    if getattr(message, "document", None):
+        return "document"
+    if getattr(message, "web_preview", None):
+        return "webpage"
+    return "other" if getattr(message, "media", None) else None
+
+
 @dataclass(frozen=True, slots=True)
 class InboundMessage:
     """A Telegram message reduced to what the pipeline needs."""
@@ -41,6 +60,11 @@ class InboundMessage:
     text: str
     timestamp: float = 0.0
     reply_to_message_id: int | None = None
+    # Text-less messages are NOT dropped: a picture may carry a signal, and
+    # "signal-like but unparseable" must reach a human, not vanish here.
+    media: str | None = None
+    edit_date: str | None = None
+    is_edit: bool = False
 
 
 class TelegramListener:
@@ -100,6 +124,12 @@ class TelegramListener:
         async def _on_new_message(event):  # pragma: no cover - thin adapter
             await self.handle_event(event)
 
+        # Half of this channel's messages are edited (result replies get their
+        # profit figure updated, signal posts get '/ HOLD' appended).
+        @self._client.on(events.MessageEdited(chats=self.channel))
+        async def _on_edited_message(event):  # pragma: no cover - thin adapter
+            await self.handle_event(event, edited=True)
+
         # A message that arrived while we were down is never delivered live.
         await self.backfill()
 
@@ -114,7 +144,7 @@ class TelegramListener:
     # -- message handling ------------------------------------------------
 
     @staticmethod
-    def to_inbound(event) -> InboundMessage | None:
+    def to_inbound(event, *, edited: bool = False) -> InboundMessage | None:
         """Normalise a Telethon event. Returns None for anything unusable."""
         # Telethon overloads `.message`: an EVENT exposes `.message` as the
         # Message object, while a MESSAGE exposes `.message` as its text. So
@@ -124,8 +154,10 @@ class TelegramListener:
         inner = getattr(event, "message", None)
         message = inner if inner is not None and not isinstance(inner, str) else event
         text = getattr(message, "message", None) or getattr(message, "text", None)
-        if not text or not str(text).strip():
-            return None
+        text = str(text) if text and str(text).strip() else ""
+        media = media_kind(message)
+        if not text and media is None:
+            return None            # a service message: nothing to classify
 
         chat_id = getattr(event, "chat_id", None) or getattr(message, "chat_id", None)
         message_id = getattr(message, "id", None)
@@ -135,15 +167,19 @@ class TelegramListener:
         date = getattr(message, "date", None)
         timestamp = date.timestamp() if hasattr(date, "timestamp") else 0.0
 
+        edit_date = getattr(message, "edit_date", None)
         return InboundMessage(
             channel_id=int(chat_id),
             message_id=int(message_id),
-            text=str(text),
+            text=text,
             timestamp=timestamp,
             reply_to_message_id=getattr(message, "reply_to_msg_id", None),
+            media=media,
+            edit_date=edit_date.isoformat() if hasattr(edit_date, "isoformat") else None,
+            is_edit=edited,
         )
 
-    async def handle_event(self, event) -> bool:
+    async def handle_event(self, event, *, edited: bool = False) -> bool:
         """Handle one Telegram event. Returns True if it reached the pipeline.
 
         Never raises: an exception here would kill the Telethon event loop and
@@ -151,7 +187,7 @@ class TelegramListener:
         keeps running — reconciliation remains the safety net for anything a
         dropped message would have driven.
         """
-        inbound = self.to_inbound(event)
+        inbound = self.to_inbound(event, edited=edited)
         if inbound is None:
             self.messages_skipped += 1
             return False
@@ -159,13 +195,26 @@ class TelegramListener:
 
     def dispatch(self, inbound: InboundMessage) -> bool:
         try:
-            result = self.pipeline.handle_message(
-                channel_id=inbound.channel_id,
-                message_id=inbound.message_id,
-                text=inbound.text,
-                timestamp=inbound.timestamp,
-                reply_to_message_id=inbound.reply_to_message_id,
-            )
+            if inbound.is_edit:
+                result = self.pipeline.handle_edit(
+                    channel_id=inbound.channel_id,
+                    message_id=inbound.message_id,
+                    text=inbound.text,
+                    edit_date=inbound.edit_date,
+                    timestamp=inbound.timestamp,
+                    reply_to_message_id=inbound.reply_to_message_id,
+                    media=inbound.media,
+                )
+            else:
+                result = self.pipeline.handle_message(
+                    channel_id=inbound.channel_id,
+                    message_id=inbound.message_id,
+                    text=inbound.text,
+                    timestamp=inbound.timestamp,
+                    reply_to_message_id=inbound.reply_to_message_id,
+                    media=inbound.media,
+                    edit_date=inbound.edit_date,
+                )
         except Exception:
             log.error(
                 "pipeline raised while handling a Telegram message",
@@ -225,6 +274,12 @@ class TelegramListener:
             if inbound is None:
                 continue
             if last_seen is not None and inbound.message_id <= last_seen:
+                # Already stored. An edit made while we were down is never
+                # delivered live, so compare against the last version we hold.
+                if inbound.edit_date and self._changed_since_stored(inbound):
+                    edited = self.to_inbound(message, edited=True)
+                    if edited is not None and self.dispatch(edited):
+                        replayed += 1
                 continue
             if self.dispatch(inbound):
                 replayed += 1
@@ -235,6 +290,11 @@ class TelegramListener:
                 extra={"action": "backfill", "count": replayed},
             )
         return replayed
+
+    def _changed_since_stored(self, inbound: InboundMessage) -> bool:
+        store = self.pipeline.store
+        last = store.latest_message_version(inbound.channel_id, inbound.message_id)
+        return last is not None and last["text_hash"] != store.text_hash(inbound.text)
 
     def _channel_id(self) -> int | None:
         try:

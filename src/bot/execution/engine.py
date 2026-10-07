@@ -868,6 +868,127 @@ class ExecutionEngine:
         )
         return True
 
+    def apply_stop_update(
+        self,
+        *,
+        trade_id: int,
+        spec: InstrumentSpec,
+        direction: Direction,
+        new_stop: Decimal,
+    ) -> tuple[bool, str]:
+        """Move a trade's stop to a channel-supplied level. (applied, why).
+
+        TIGHTEN-ONLY. A stop moving closer to the market only ever reduces risk;
+        one moving away (widening) increases it, and a widened stop is exactly
+        how a position outlives its estimated liquidation (trade 8). So a
+        widening is refused here and surfaced to a human instead of obeyed.
+
+        Also refused: a level already on the wrong side of the mark (it would
+        trigger instantly), and any trade that is closing, quarantined or
+        terminal. The amend is atomic (`edit-order`, id preserved), so a failed
+        amend leaves the ORIGINAL stop active and the position still protected.
+        """
+        trade = self.store.get_trade(trade_id)
+        state = TradeState(trade["state"])
+        if state.is_terminal or state in (
+            TradeState.CLOSING, TradeState.REQUIRES_REVIEW, TradeState.SAFE_ERROR
+        ):
+            return False, f"trade is {state.value}"
+
+        stop_new = round_price_to_tick(
+            new_stop, spec.tick_size, round_up=direction is Direction.SHORT
+        )
+        if stop_new <= 0:
+            return False, "non-positive level"
+
+        stop_row = self._active_stop_row(trade_id)
+        current = (
+            Decimal(stop_row["trigger_price"])
+            if stop_row is not None and stop_row["trigger_price"]
+            else Decimal(trade["intent_stop_loss"]) if trade["intent_stop_loss"]
+            else None
+        )
+        if current is None:
+            return False, "no current stop level to compare against"
+        if stop_new == current:
+            return True, f"stop already at {stop_new}"
+
+        tighter = stop_new > current if direction is Direction.LONG else stop_new < current
+        if not tighter:
+            return False, (
+                f"{stop_new} would WIDEN the stop from {current}; widening "
+                "increases risk and is never applied automatically"
+            )
+
+        mark = self.client.get_mark_price(spec.symbol)
+        wrong_side = stop_new >= mark if direction is Direction.LONG else stop_new <= mark
+        if wrong_side:
+            return False, (
+                f"{stop_new} is not beyond the mark {mark} for a "
+                f"{direction.value}; it would trigger immediately"
+            )
+
+        position = self.observer.observe_position(spec.symbol)
+        has_position = position is not None and not position.is_flat
+        if stop_row is None or not has_position:
+            # Nothing live to amend (still waiting for entry, or the stop has
+            # not been placed yet): record the instruction so the stop is
+            # placed at the new level.
+            self.store.update_intent_stop(trade_id, stop_new)
+            self.store.append_event(
+                EventType.STOP_UPDATED,
+                f"stop intent {current} -> {stop_new} (no live stop yet)",
+                trade_id=trade_id,
+            )
+            return True, f"intent stop {current} -> {stop_new}"
+
+        self.store.append_event(
+            EventType.SL_REPLACEMENT_INITIATED,
+            f"amending stop {current} -> {stop_new} (channel update)",
+            trade_id=trade_id, order_id=stop_row["id"],
+        )
+        ok = self.client.amend_order(
+            stop_row["exchange_order_id"], size=position.size,
+            trigger_price=stop_new,
+        )
+        if not ok:
+            self.store.append_event(
+                EventType.SL_REPLACEMENT_FAILED, "stop update amend failed",
+                trade_id=trade_id, order_id=stop_row["id"], severity="ERROR",
+            )
+            return False, "exchange refused the amend; original stop still active"
+        if not self._verify_stop(trade_id, stop_row["exchange_order_id"], position.size):
+            self._enter_safe_error(
+                trade_id,
+                "stop verification FAILED after a channel stop update — cannot "
+                "confirm which stop is authoritative",
+                order_id=stop_row["exchange_order_id"],
+            )
+            return False, "stop could not be verified after the amend"
+
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE orders SET quantity = ?, trigger_price = ? WHERE id = ?",
+                (str(position.size), str(stop_new), stop_row["id"]),
+            )
+        self.store.set_active_stop(
+            trade_id, order_uid=stop_row["order_uid"], trigger_price=stop_new,
+            breakeven=bool(trade["breakeven_active"]),
+            breakeven_price=(Decimal(trade["breakeven_price"])
+                             if trade["breakeven_price"] else None),
+        )
+        self.store.update_intent_stop(trade_id, stop_new)
+        self.store.append_event(
+            EventType.STOP_UPDATED, f"stop {current} -> {stop_new}",
+            trade_id=trade_id, order_id=stop_row["id"],
+        )
+        self.store.append_event(
+            EventType.SL_REPLACEMENT_VERIFIED,
+            f"stop verified at {stop_new}", trade_id=trade_id,
+            order_id=stop_row["id"],
+        )
+        return True, f"stop {current} -> {stop_new}"
+
     def _verify_stop(
         self, trade_id: int, exchange_order_id: str, expected_size: Decimal
     ) -> bool:

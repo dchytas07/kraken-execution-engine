@@ -51,6 +51,33 @@ CREATE INDEX IF NOT EXISTS idx_messages_fingerprint ON messages (signal_fingerpr
 CREATE INDEX IF NOT EXISTS idx_messages_decision    ON messages (execution_decision);
 CREATE INDEX IF NOT EXISTS idx_messages_type        ON messages (parsed_type);
 
+-- Every version of every message. `messages` holds the ORIGINAL (its UNIQUE
+-- (channel_id, message_id) is the idempotency layer); an edit appends a row
+-- here instead of overwriting anything. Telegram only ever hands us the latest
+-- text of an edited message, so a version exists only if the bot saw it.
+-- class/action/reason are what the bot decided and did for THAT version.
+CREATE TABLE IF NOT EXISTS message_versions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_row_id      INTEGER NOT NULL REFERENCES messages (id),
+    channel_id          INTEGER NOT NULL,
+    message_id          INTEGER NOT NULL,
+    version             INTEGER NOT NULL,
+    recorded_at         TEXT    NOT NULL,
+    edit_date           TEXT,
+    text                TEXT    NOT NULL,
+    text_hash           TEXT    NOT NULL,
+    media               TEXT,
+    reply_to_message_id INTEGER,
+    message_class       TEXT    NOT NULL,
+    action              TEXT    NOT NULL,
+    reason              TEXT    NOT NULL,
+    trade_id            INTEGER REFERENCES trades (id),
+    UNIQUE (channel_id, message_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_versions_class  ON message_versions (message_class);
+CREATE INDEX IF NOT EXISTS idx_message_versions_action ON message_versions (action);
+
 -- ---------------------------------------------------------------------------
 -- Trades. INTENT columns come from the signal; ACTUAL columns come only from
 -- exchange-confirmed fills. Nothing writes both from the same code path.
