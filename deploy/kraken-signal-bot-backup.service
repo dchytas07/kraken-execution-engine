@@ -1,0 +1,22 @@
+[Unit]
+Description=Kraken Signal Bot nightly encrypted backup (db, telegram session, .env)
+# Never run alongside a restart of the bot itself; the snapshot is consistent
+# either way (SQLite backup API), but there is no reason to race it.
+After=kraken-signal-bot.service
+
+[Service]
+Type=oneshot
+User=dchyt
+Group=dchyt
+WorkingDirectory=/home/dchyt/kraken-signal-bot
+Environment=PATH=/home/dchyt/.cargo/bin:/home/dchyt/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# BACKUP_GPG_RECIPIENT (a key FINGERPRINT: public, not a secret) and optionally
+# BACKUP_DIR live here so this unit never needs editing. Missing file is fine;
+# the job then fails closed and alerts rather than writing an unencrypted backup.
+EnvironmentFile=-/home/dchyt/.config/kraken-signal-bot/backup.env
+
+ExecStart=/home/dchyt/kraken-signal-bot/.venv/bin/python tools/backup.py backup
+
+NoNewPrivileges=true
+PrivateTmp=true

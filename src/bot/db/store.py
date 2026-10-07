@@ -61,7 +61,7 @@ class OppositeDirectionActive(SymbolAlreadyActive):
 class Store:
     """Transactional repository. All writes go through `transaction()`."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, migrate: bool = True) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
@@ -71,7 +71,10 @@ class Store:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA synchronous = FULL")
-        self._migrate()
+        # Off only for tools that touch a database a RUNNING service is using
+        # and must not change its schema underneath it (tools/repair_closed_trade).
+        if migrate:
+            self._migrate()
 
     def close(self) -> None:
         self._conn.close()
@@ -481,7 +484,9 @@ class Store:
             ).fetchall()
         )
 
-    def realized_pnl_since(self, since_iso: str) -> tuple[Decimal, int, int]:
+    def realized_pnl_since(
+        self, since_iso: str, until_iso: str | None = None
+    ) -> tuple[Decimal, int, int]:
         """(total realised P&L, trades closed, trades with NO recorded P&L).
 
         Counts only trades that actually reached CLOSED — a CANCELLED trade
@@ -501,8 +506,9 @@ class Store:
                       SUM(CASE WHEN realized_pnl IS NULL THEN 1 ELSE 0 END) AS unknown
                  FROM trades
                 WHERE state = 'CLOSED' AND closed_at IS NOT NULL
-                  AND closed_at >= ?""",
-            (since_iso,),
+                  AND closed_at >= ?
+                  AND (? IS NULL OR closed_at < ?)""",
+            (since_iso, until_iso, until_iso),
         ).fetchone()
         return (Decimal(str(row["total"] or 0)), int(row["n"] or 0),
                 int(row["unknown"] or 0))

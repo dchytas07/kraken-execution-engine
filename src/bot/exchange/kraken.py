@@ -40,6 +40,23 @@ def _dec(value, default=None) -> Decimal | None:
         return default
 
 
+def fill_from_raw(f: dict) -> Fill:
+    """One fill from `kraken futures [paper] fills`, or from the paper state file
+    (same shape). Module-level so the repair tool parses fills exactly as the
+    adapter does."""
+    return Fill(
+        fill_id=str(f.get("id") or f.get("fill_id") or ""),
+        order_id=str(f.get("order_id") or f.get("orderId") or "") or None,
+        client_order_id=f.get("client_order_id") or f.get("cliOrdId"),
+        symbol=f.get("symbol", ""),
+        side=str(f.get("side", "")).lower(),
+        size=_dec(f.get("size"), Decimal(0)) or Decimal(0),
+        price=_dec(f.get("price"), Decimal(0)) or Decimal(0),
+        filled_at=f.get("filled_at") or f.get("fillTime"),
+        fill_type=f.get("fill_type") or f.get("fillType"),
+    )
+
+
 _STATUS_MAP = {
     "filled": OrderStatus.FILLED,
     "open": OrderStatus.OPEN,
@@ -206,23 +223,7 @@ class KrakenCliAdapter(ExchangeClient):
     def get_fills(self) -> list[Fill]:
         data = self._run(*self._futures("fills"))
         raw = data.get("fills", []) if isinstance(data, dict) else data
-        fills = []
-        for f in raw:
-            size = _dec(f.get("size"), Decimal(0)) or Decimal(0)
-            price = _dec(f.get("price"), Decimal(0)) or Decimal(0)
-            fills.append(
-                Fill(
-                    fill_id=str(f.get("id") or f.get("fill_id") or ""),
-                    order_id=str(f.get("order_id") or f.get("orderId") or "") or None,
-                    client_order_id=f.get("client_order_id") or f.get("cliOrdId"),
-                    symbol=f.get("symbol", ""),
-                    side=str(f.get("side", "")).lower(),
-                    size=size,
-                    price=price,
-                    filled_at=f.get("filled_at") or f.get("fillTime"),
-                )
-            )
-        return fills
+        return [fill_from_raw(f) for f in raw]
 
     # -- leverage -----------------------------------------------------------
 

@@ -344,45 +344,74 @@ def send_review_alert(
         return False
 
 
+# A summary missed by more than this (host asleep, bot down at the anchor hour)
+# is skipped rather than delivered stale: "daily summary" at 03:00 for 20:00
+# yesterday is noise, and the next anchor's window is contiguous anyway.
+SUMMARY_MAX_LATE_HOURS = 6
+
+
+def summary_anchor(now: datetime, hour: int, tz) -> datetime:
+    """The most recent `hour`:00 (in `tz`) at or before `now`, as an aware UTC
+    datetime. Wall-clock arithmetic in the zone, so it stays at `hour` across a
+    DST change instead of drifting by an hour."""
+    local = now.astimezone(tz)
+    anchor = local.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if anchor > local:
+        anchor -= timedelta(days=1)
+    return anchor.astimezone(UTC)
+
+
 def send_daily_summary(
     store,
     config,
     *,
     now: datetime | None = None,
-    interval_seconds: int = DIGEST_INTERVAL_SECONDS,
     positions: list | None = None,
 ) -> bool:
-    """Once every 24h: the day's realised P&L, and how open trades are doing.
+    """Once a day, AT A FIXED HOUR: the day's realised P&L, and how open trades
+    are doing.
 
-    Cadence is DB-backed (a DAILY_SUMMARY event row), not an in-process
-    timer, so it survives restarts — `time.monotonic()` resets to zero on
-    every process and a daily-restarted bot would otherwise never reach 24h.
-    Verified against 18 real sends: every gap was >= 24.01h across 27
-    service restarts.
+    Anchored to `config.daily_summary_hour` in `config.daily_summary_tz`. The
+    previous rule ("24h after the last send") drifted: over three months the send
+    time wandered from 20:13 to 16:56 because every restart or slow tick pushed it
+    later and nothing ever pulled it back.
+
+    Due when the most recent anchor has no DAILY_SUMMARY marker at or after it and
+    is no more than SUMMARY_MAX_LATE_HOURS old. The marker is a DB event row, not
+    an in-process timer, so a restart neither re-sends nor loses it. The window is
+    [previous anchor, this anchor), so consecutive summaries tile the day with no
+    gap and no overlap even when one is sent late.
 
     `positions` is supplied by the caller (the runner reads the exchange),
     keeping this module free of exchange dependencies.
     """
     now = now or datetime.now(UTC)
     try:
+        tz = config.daily_summary_tz
+        anchor = summary_anchor(now, config.daily_summary_hour, tz)
+        if (now - anchor).total_seconds() > SUMMARY_MAX_LATE_HOURS * 3600:
+            return False
         last = store.last_event_at(EventType.DAILY_SUMMARY)
         if last:
             try:
                 last_at = datetime.fromisoformat(last)
                 if last_at.tzinfo is None:
                     last_at = last_at.replace(tzinfo=UTC)
-                if (now - last_at).total_seconds() < interval_seconds:
+                if last_at >= anchor:
                     return False
             except (ValueError, TypeError):
                 pass
 
-        since = (now - timedelta(seconds=interval_seconds)).isoformat()
-        realized, closed_count, unknown_pnl = store.realized_pnl_since(since)
+        window_start = (anchor.astimezone(tz) - timedelta(days=1)).astimezone(UTC)
+        realized, closed_count, unknown_pnl = store.realized_pnl_since(
+            window_start.isoformat(), anchor.isoformat()
+        )
         open_rows = store.open_trades()
         by_symbol = {p.symbol: p for p in (positions or [])}
 
-        lines = [f"{greeting(now)} 📊 Daily summary", ""]
-        lines.append(f"  realised P&L (24h): {_money(realized)}"
+        lines = [f"{greeting(now.astimezone(tz))} 📊 Daily summary", ""]
+        lines.append(f"  realised P&L (24h to {anchor.astimezone(tz):%H:%M}): "
+                     f"{_money(realized)}"
                      f"   across {closed_count} closed trade(s)")
         if unknown_pnl:
             # SUM() skips NULLs, so an uncomputed P&L would otherwise be

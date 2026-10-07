@@ -82,6 +82,10 @@ class Fill:
     size: Decimal
     price: Decimal
     filled_at: str | None = None
+    # How it executed ("limit_fill", "market", "triggered", "liquidation").
+    # A LIQUIDATION fill belongs to none of our orders (no client order id), so
+    # it is the only record of how a liquidated position ended.
+    fill_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

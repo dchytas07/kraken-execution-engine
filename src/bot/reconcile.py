@@ -609,12 +609,27 @@ class Reconciler:
         'flat AND no orders remain'.
         """
         cancelled = 0
+        resting_now = None            # read lazily, once, only if a cancel fails
         for row in self.store.orders_for_trade(trade_id):
             if OrderStatus(row["status"]).is_final or not row["exchange_order_id"]:
                 continue
             if self.client.cancel_order(row["exchange_order_id"]):
                 self.store.update_order(row["id"], status=OrderStatus.CANCELLED)
                 cancelled += 1
+                continue
+            # The cancel did not take. Either the order is genuinely still there
+            # (reported below as a leftover), or it already vanished with the
+            # position (a liquidation takes its resting orders with it) and its
+            # row would otherwise stay UNKNOWN forever (trade 8's stop).
+            if resting_now is None:
+                resting_now = {o.exchange_order_id
+                               for o in self.client.get_open_orders()}
+            if row["exchange_order_id"] not in resting_now:
+                self.store.update_order(
+                    row["id"], status=OrderStatus.CANCELLED,
+                    status_detail="already gone from the exchange when the "
+                                  "position closed",
+                )
 
         if state is not TradeState.CLOSING:
             self.store.transition_trade(

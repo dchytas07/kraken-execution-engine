@@ -406,3 +406,132 @@ def test_fills_parsed_from_both_engine_shapes():
 def test_mark_price_prefers_mark_over_last():
     a = adapter({"futures ticker": {"ticker": {"markPrice": 64601.7, "last": 64597}}})
     assert a.get_mark_price("PF_XBTUSD") == Decimal("64601.7")
+
+
+# ==========================================================================
+# CLI retry policy: reads retry inside the same budget, mutations never do
+# ==========================================================================
+
+
+class Flaky:
+    """A runner that fails N times with a given error, then succeeds."""
+
+    def __init__(self, failures, error="timeout", payload='{"ok": true}'):
+        self.failures, self.error, self.payload = failures, error, payload
+        self.calls = []
+
+    def __call__(self, argv, timeout):
+        import subprocess
+        self.calls.append((list(argv), timeout))
+        if len(self.calls) <= self.failures:
+            if self.error == "timeout":
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return 0, json.dumps({"error": self.error, "message": "boom"}), ""
+        return 0, self.payload, ""
+
+
+def cli_with(runner, timeout=30):
+    sleeps = []
+    return KrakenCli(timeout=timeout, runner=runner, sleep=sleeps.append), sleeps
+
+
+def test_a_read_that_times_out_is_retried_and_then_succeeds():
+    runner = Flaky(failures=2)
+    cli, sleeps = cli_with(runner)
+    assert cli.run("futures", "paper", "positions").data == {"ok": True}
+    assert len(runner.calls) == 3
+    assert sleeps == [0.5, 1.0], "backs off between attempts"
+    assert cli.retries_used == 2
+
+
+def test_each_read_attempt_gets_a_slice_of_the_same_total_budget():
+    """3 x 10s, not 3 x 30s: a hang must not cost three times as long (the
+    protection sweep shares this thread)."""
+    runner = Flaky(failures=3)
+    cli, _ = cli_with(runner, timeout=30)
+    with pytest.raises(Exception):
+        cli.run("futures", "paper", "fills")
+    assert [t for _, t in runner.calls] == [10, 10, 10]
+    assert sum(t for _, t in runner.calls) <= 30
+
+
+def test_a_read_that_never_succeeds_still_fails_closed_with_the_original_error():
+    from bot.exchange.cli import ErrorCategory, KrakenCliError
+    runner = Flaky(failures=99)
+    cli, _ = cli_with(runner)
+    with pytest.raises(KrakenCliError) as exc:
+        cli.run("futures", "paper", "positions")
+    assert exc.value.category is ErrorCategory.TIMEOUT and exc.value.retryable
+    assert len(runner.calls) == 3, "bounded: never retries forever"
+
+
+@pytest.mark.parametrize("args", [
+    ("futures", "paper", "buy", "PF_XBTUSD", "0.001", "--type", "market"),
+    ("futures", "paper", "sell", "PF_XBTUSD", "0.001"),
+    ("futures", "paper", "cancel", "--order-id", "FP-1"),
+    ("futures", "paper", "cancel-all"),
+    ("futures", "paper", "edit-order", "--order-id", "FP-1", "--size", "1"),
+    ("futures", "paper", "set-leverage", "PF_XBTUSD", "10"),
+    ("futures", "order", "buy", "PF_XBTUSD", "1"),
+    ("futures", "paper", "init"),
+])
+def test_a_command_that_can_change_anything_is_never_retried(args):
+    """A mutation that timed out may have reached the exchange: retrying could
+    place the order twice. The caller reconciles on the client order id."""
+    from bot.exchange.cli import KrakenCliError
+    runner = Flaky(failures=99)
+    cli, sleeps = cli_with(runner)
+    with pytest.raises(KrakenCliError):
+        cli.run(*args)
+    assert len(runner.calls) == 1 and sleeps == []
+    assert runner.calls[0][1] == 30, "a mutation keeps the full timeout"
+
+
+def test_set_leverage_is_not_mistaken_for_the_read_verb_leverage():
+    from bot.exchange.cli import is_read_only
+    assert is_read_only(("futures", "paper", "leverage"))
+    assert not is_read_only(("futures", "paper", "set-leverage", "PF_XBTUSD", "10"))
+
+
+def test_an_unknown_command_is_treated_as_a_mutation():
+    from bot.exchange.cli import is_read_only
+    assert not is_read_only(("futures", "paper", "frobnicate"))
+    assert not is_read_only(())
+
+
+@pytest.mark.parametrize("error", ["auth", "validation", "api", "config", "parse"])
+def test_errors_that_retrying_cannot_fix_are_not_retried(error):
+    from bot.exchange.cli import KrakenCliError
+    runner = Flaky(failures=99, error=error)
+    cli, sleeps = cli_with(runner)
+    with pytest.raises(KrakenCliError):
+        cli.run("futures", "paper", "positions")
+    assert len(runner.calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize("error", ["network", "rate_limit"])
+def test_network_and_rate_limit_errors_on_reads_are_retried(error):
+    runner = Flaky(failures=1, error=error)
+    cli, sleeps = cli_with(runner)
+    assert cli.run("futures", "ticker", "PF_XBTUSD").ok
+    assert len(runner.calls) == 2 and sleeps == [0.5]
+
+
+def test_a_read_that_succeeds_first_time_pays_nothing():
+    runner = Flaky(failures=0)
+    cli, sleeps = cli_with(runner)
+    cli.run("futures", "paper", "positions")
+    assert len(runner.calls) == 1 and sleeps == [] and cli.retries_used == 0
+
+
+def test_a_timed_out_order_surfaces_as_an_error_not_a_silent_retry_through_the_adapter():
+    """End to end through the adapter: place_order on a timeout reports
+    not-accepted for the caller to reconcile (brief 40), exactly one CLI call."""
+    runner = Flaky(failures=99)
+    cli, _ = cli_with(runner)
+    adapter = KrakenCliAdapter(cli, TradingMode.PAPER, V1_ASSETS)
+    res = adapter.place_order(OrderRequest(
+        symbol="PF_XBTUSD", side="buy", size=Decimal("0.001"), order_type="market",
+        purpose=OrderPurpose.ENTRY, client_order_id="T-x-ENTRY-1"))
+    assert res.accepted is False
+    assert len(runner.calls) == 1

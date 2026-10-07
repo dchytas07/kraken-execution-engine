@@ -29,6 +29,7 @@ from ..db.store import Store
 from ..exchange.base import ExchangeClient, OrderRequest, Position
 from ..killswitch import KillSwitch
 from ..logging_setup import get_logger
+from ..pnl import exit_pnl, liquidation_exit
 from ..models import (
     CanonicalAsset,
     Direction,
@@ -1680,8 +1681,7 @@ class ExecutionEngine:
         entry = trade["actual_avg_entry_price"]
         if not entry:
             return None
-        total_size = Decimal(0)
-        weighted = Decimal(0)
+        exits: list[tuple[Decimal, Decimal]] = []
         # Every way a position can LEAVE, not just an explicit close. A
         # stop-out or a TP fill exits the position without any CLOSE order,
         # and those are precisely the closes worth accounting for -- looking
@@ -1696,16 +1696,20 @@ class ExecutionEngine:
             observed = self.observer.observe_order(row["client_order_id"])
             if not observed.filled_size or not observed.avg_fill_price:
                 continue
-            total_size += Decimal(str(observed.filled_size))
-            weighted += (Decimal(str(observed.avg_fill_price))
-                         * Decimal(str(observed.filled_size)))
-        if total_size <= 0:
-            return None
-        exit_price = weighted / total_size
-        move = exit_price - Decimal(str(entry))
-        if trade["direction"] == Direction.SHORT.value:
-            move = -move
-        return (move * total_size).quantize(Decimal("0.01"))
+            exits.append((Decimal(str(observed.filled_size)),
+                          Decimal(str(observed.avg_fill_price))))
+
+        # What is left after those exits left the exchange by LIQUIDATION, which
+        # belongs to none of our orders.
+        remaining, _ = self.trade_ledger(trade_id)
+        liquidated = liquidation_exit(
+            self.client.get_fills(), symbol=trade["symbol"],
+            since=trade["created_at"], quantity=remaining,
+        )
+        if liquidated is not None:
+            exits.append(liquidated)
+
+        return exit_pnl(trade["direction"], Decimal(str(entry)), exits)
 
     def cancel_remaining_entries(self, trade_id: int) -> int:
         """Cancel resting entry orders (brief 11: never leave stale entries)."""

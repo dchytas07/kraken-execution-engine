@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -117,6 +118,11 @@ class Config:
     max_total_open_margin: Decimal | None
     entry_order_expiry_hours: int
     reconciliation_interval_seconds: int
+    # The daily summary goes out at this hour (0-23) in this timezone, every day,
+    # instead of "24h after the last one" (which drifted from 20:13 to 16:56 over
+    # three months of restarts).
+    daily_summary_hour: int
+    daily_summary_tz: ZoneInfo
 
     telegram_api_id: int | None
     telegram_api_hash: str | None
@@ -237,6 +243,34 @@ def _int(env: dict[str, str], key: str, default: str | None = None) -> int:
         raise ConfigError(f"{key}={raw!r} is not a valid integer") from exc
 
 
+def default_timezone_name() -> str:
+    """The host's IANA timezone name, falling back to UTC.
+
+    $TZ, then /etc/timezone (Debian/Ubuntu/WSL), then the /etc/localtime
+    symlink. Anything unrecognised falls through to UTC rather than guessing.
+    """
+    candidates: list[str] = []
+    if os.environ.get("TZ"):
+        candidates.append(os.environ["TZ"].lstrip(":"))
+    try:
+        candidates.append(Path("/etc/timezone").read_text().strip())
+    except OSError:
+        pass
+    try:
+        target = os.readlink("/etc/localtime")
+        if "zoneinfo/" in target:
+            candidates.append(target.split("zoneinfo/", 1)[1])
+    except OSError:
+        pass
+    for name in candidates:
+        try:
+            ZoneInfo(name)
+            return name
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+    return "UTC"
+
+
 def _parse_channel(raw: str | None) -> str | int | None:
     """Coerce a numeric TELEGRAM_CHANNEL to int; leave @usernames as str.
 
@@ -346,6 +380,18 @@ def load_config(
         _decimal(env, "MAX_SIZING_DEVIATION_PERCENT", "5.0"),
     )
 
+    daily_summary_hour = _int(env, "DAILY_SUMMARY_HOUR", "20")
+    if not 0 <= daily_summary_hour <= 23:
+        raise ConfigError(
+            f"DAILY_SUMMARY_HOUR={daily_summary_hour} must be between 0 and 23"
+        )
+    tz_name = _raw(env, "DAILY_SUMMARY_TZ") or default_timezone_name()
+    try:
+        daily_summary_tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(
+            f"DAILY_SUMMARY_TZ={tz_name!r} is not a known IANA timezone"
+        ) from exc
     max_trades_per_symbol = _int(env, "MAX_TRADES_PER_SYMBOL", "2")
     if not 1 <= max_trades_per_symbol <= 4:
         raise ConfigError(
@@ -432,6 +478,8 @@ def load_config(
         max_total_open_margin=max_total_open_margin,
         entry_order_expiry_hours=entry_order_expiry_hours,
         reconciliation_interval_seconds=reconciliation_interval_seconds,
+        daily_summary_hour=daily_summary_hour,
+        daily_summary_tz=daily_summary_tz,
         telegram_api_id=telegram_api_id,
         telegram_api_hash=telegram_api_hash,
         telegram_channel=telegram_channel,

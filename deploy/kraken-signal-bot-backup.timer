@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly encrypted backup of the Kraken Signal Bot's state
+
+[Timer]
+# 03:30 local time. WSL2 sleeps with the host, so Persistent=true runs a missed
+# backup as soon as the machine is awake again, instead of skipping the night.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10min
+Unit=kraken-signal-bot-backup.service
+
+[Install]
+WantedBy=timers.target

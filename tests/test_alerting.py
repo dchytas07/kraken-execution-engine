@@ -12,6 +12,7 @@ import logging
 import urllib.error
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -291,6 +292,14 @@ def test_injected_clock_is_used_for_the_cadence_marker_too(store, sent):
 class Cfg:
     alert_telegram_bot_token = "TOKEN"
     alert_telegram_chat_id = "CHAT"
+    daily_summary_hour = 20
+    daily_summary_tz = ZoneInfo("UTC")
+
+
+# A clock inside the 20:00-26:00 UTC window on one fixed day. The summary is
+# anchored to a time of day, so a test that used the real clock would pass or
+# fail depending on when it ran.
+AT = datetime(2026, 7, 31, 20, 30, tzinfo=UTC)
 
 
 def test_greeting_matches_the_time_of_day():
@@ -344,7 +353,7 @@ def test_notification_failure_never_propagates(monkeypatch):
 def test_daily_summary_reports_realised_pnl_and_open_trades(store, sent):
     from bot.alerting import send_daily_summary
     quarantine(store, TradeState.PARSED, "PF_XBTUSD")  # an open, healthy trade
-    assert send_daily_summary(store, Cfg()) is True
+    assert send_daily_summary(store, Cfg(), now=AT) is True
     text = sent[0][2]
     assert "Daily summary" in text
     assert "realised P&L" in text
@@ -353,15 +362,15 @@ def test_daily_summary_reports_realised_pnl_and_open_trades(store, sent):
 
 def test_daily_summary_sends_even_on_a_quiet_day(store, sent):
     """Unlike the unresolved digest, "nothing happened" IS the daily report."""
-    assert send_daily_summary(store, Cfg()) is True
+    assert send_daily_summary(store, Cfg(), now=AT) is True
     assert "no open trades" in sent[0][2]
 
 
-def test_daily_summary_is_once_per_24h(store, sent):
+def test_daily_summary_is_once_per_day(store, sent):
     from bot.alerting import send_daily_summary
-    assert send_daily_summary(store, Cfg()) is True
-    assert send_daily_summary(store, Cfg()) is False
-    later = datetime.now(UTC) + timedelta(hours=25)
+    assert send_daily_summary(store, Cfg(), now=AT) is True
+    assert send_daily_summary(store, Cfg(), now=AT) is False
+    later = AT + timedelta(hours=24)
     assert send_daily_summary(store, Cfg(), now=later) is True
     assert len(sent) == 2
 
@@ -371,7 +380,7 @@ def test_daily_summary_never_raises_on_a_broken_store(caplog):
     class Broken:
         def last_event_at(self, _): raise RuntimeError("db gone")
     with caplog.at_level(logging.WARNING):
-        assert send_daily_summary(Broken(), Cfg()) is False
+        assert send_daily_summary(Broken(), Cfg(), now=AT) is False
 
 
 # ==========================================================================
@@ -396,7 +405,7 @@ def test_cadence_marker_is_written_to_the_database(tmp_path, sent):
     """Persistence, asserted on the DB itself rather than inferred."""
     db = tmp_path / "c.db"
     s1 = Store(db)
-    assert send_daily_summary(s1, Cfg()) is True
+    assert send_daily_summary(s1, Cfg(), now=AT) is True
     s1.close()
 
     # A brand-new Store over the same file — what a restart actually is.
@@ -405,7 +414,7 @@ def test_cadence_marker_is_written_to_the_database(tmp_path, sent):
         "no DAILY_SUMMARY marker in the database: the cadence cannot survive "
         "a restart"
     )
-    assert send_daily_summary(s2, Cfg()) is False
+    assert send_daily_summary(s2, Cfg(), now=AT) is False
     s2.close()
     assert len(sent) == 1
 
@@ -427,15 +436,15 @@ def test_cadence_is_read_from_the_store_not_a_process_timer(sent):
         # reason. With valid data, the ONLY thing that can produce False is
         # the cadence check actually consulting last_event_at.
         def last_event_at(self, event_type):
-            return (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        def realized_pnl_since(self, since):
+            return (AT - timedelta(minutes=10)).isoformat()   # after the 20:00 anchor
+        def realized_pnl_since(self, since, until=None):
             return (Decimal("0"), 0, 0)
         def open_trades(self):
             return []
         def append_event(self, *a, **kw):
             return 1
 
-    assert send_daily_summary(StoreSayingItSentAnHourAgo(), Cfg()) is False
+    assert send_daily_summary(StoreSayingItSentAnHourAgo(), Cfg(), now=AT) is False
     assert sent == [], "sent despite the store reporting a send 1 hour ago"
 
 
@@ -445,7 +454,7 @@ def test_a_restart_does_not_reset_the_window_in_a_fresh_interpreter(tmp_path, se
     import subprocess, sys, textwrap
     db = tmp_path / "c.db"
     s1 = Store(db)
-    assert send_daily_summary(s1, Cfg()) is True
+    assert send_daily_summary(s1, Cfg(), now=AT) is True
     s1.close()
 
     script = (
@@ -456,11 +465,16 @@ def test_a_restart_does_not_reset_the_window_in_a_fresh_interpreter(tmp_path, se
         "import bot.alerting as a\n"
         "a.send_alert = lambda *args: (_ for _ in ()).throw("
         "AssertionError('SENT AGAIN AFTER RESTART'))\n"
+        "from datetime import datetime, UTC\n"
+        "from zoneinfo import ZoneInfo\n"
         "class C:\n"
         "    alert_telegram_bot_token = 'T'\n"
         "    alert_telegram_chat_id = 'C'\n"
+        "    daily_summary_hour = 20\n"
+        "    daily_summary_tz = ZoneInfo('UTC')\n"
         f"s = Store(Path({str(db)!r}))\n"
-        "print('RESULT', send_daily_summary(s, C()))\n"
+        "print('RESULT', send_daily_summary(s, C(), "
+        "now=datetime(2026, 7, 31, 21, 0, tzinfo=UTC)))\n"
     )
     out = subprocess.run([sys.executable, "-c", script], capture_output=True,
                          text=True, timeout=60)
@@ -473,9 +487,9 @@ def test_a_restart_does_not_reset_the_window_in_a_fresh_interpreter(tmp_path, se
 def test_cadence_reopens_after_24h_even_across_restarts(tmp_path, sent):
     db = tmp_path / "c.db"
     s1 = _fresh_store(db)
-    assert send_daily_summary(s1, Cfg()) is True
+    assert send_daily_summary(s1, Cfg(), now=AT) is True
     s1.close()
-    later = datetime.now(UTC) + timedelta(hours=25)
+    later = AT + timedelta(hours=24)
     s2 = _fresh_store(db)
     assert send_daily_summary(s2, Cfg(), now=later) is True
     s2.close()
@@ -488,7 +502,7 @@ def test_summary_shows_open_positions_with_dollar_and_percent_pnl(store, sent):
                                actual_avg_entry_price=Decimal("63630"))
     pos = [FakePos("PF_XBTUSD", "short", "0.0046", "63630",
                    mark="64456.24", pnl="-3.80")]
-    assert send_daily_summary(store, Cfg(), positions=pos) is True
+    assert send_daily_summary(store, Cfg(), positions=pos, now=AT) is True
     text = sent[0][2]
     assert "open trades (1)" in text
     assert "PF_XBTUSD" in text
@@ -503,7 +517,7 @@ def test_summary_derives_pnl_when_the_exchange_omits_it(store, sent):
                                actual_avg_entry_price=Decimal("100"))
     # No unrealized_pnl from the exchange, but a mark is available.
     pos = [FakePos("PF_XBTUSD", "long", "1", "100", mark="110", pnl=None)]
-    assert send_daily_summary(store, Cfg(), positions=pos) is True
+    assert send_daily_summary(store, Cfg(), positions=pos, now=AT) is True
     assert "+$10.00" in sent[0][2]
 
 
@@ -515,10 +529,129 @@ def test_unrecorded_pnl_is_flagged_not_silently_counted_as_zero(store, sent):
     tid = quarantine(store, TradeState.PARSED, "PF_XBTUSD")
     store.transition_trade(tid, TradeState.CLOSING)
     store.transition_trade(tid, TradeState.CLOSED)   # closed, realized_pnl NULL
+    with store.transaction() as conn:                # ...inside the summary window
+        conn.execute("UPDATE trades SET closed_at = ?",
+                     ((AT - timedelta(hours=3)).isoformat(),))
 
-    assert send_daily_summary(store, Cfg()) is True
+    assert send_daily_summary(store, Cfg(), now=AT) is True
     text = sent[0][2]
     assert "1 closed trade(s)" in text
     assert "no recorded P&L" in text, (
         "a closed trade with NULL P&L was folded into the total as zero"
     )
+
+
+# ==========================================================================
+# Daily summary: anchored to a fixed local hour (it used to drift 20:13 -> 16:56)
+# ==========================================================================
+
+
+class AthensCfg(Cfg):
+    daily_summary_hour = 20
+    daily_summary_tz = ZoneInfo("Europe/Athens")
+
+
+def _at(day, hour, minute=0, tz=UTC):
+    return datetime(2026, 7, day, hour, minute, tzinfo=tz)
+
+
+def test_summary_does_not_drift_it_goes_out_at_the_same_hour_every_day(store, sent):
+    """Three weeks of a bot whose checks happen at arbitrary minutes and which
+    keeps getting delayed: every summary is still sent in the 20:00 hour, never
+    24h-after-the-last."""
+    sends = []
+    for day in range(1, 22):
+        # first check of the day AFTER the anchor happens a little later each day
+        t = _at(day, 20, min(day * 2, 59))
+        if send_daily_summary(store, Cfg(), now=t):
+            sends.append(t)
+        # and plenty of checks in between that must do nothing
+        for hour in (3, 9, 14, 19):
+            assert send_daily_summary(store, Cfg(), now=_at(day, hour)) is False or \
+                   _at(day, hour) in sends
+    assert len(sends) == 21, "exactly one per day"
+    assert all(t.hour == 20 for t in sends)
+
+
+def test_not_sent_before_the_anchor_hour(store, sent):
+    assert send_daily_summary(store, Cfg(), now=_at(5, 19, 59)) is False
+    assert send_daily_summary(store, Cfg(), now=_at(5, 20, 0)) is True
+
+
+def test_only_one_send_per_anchor_however_often_it_is_checked(store, sent):
+    for minute in range(0, 60, 5):
+        send_daily_summary(store, Cfg(), now=_at(5, 20, minute))
+    assert len(sent) == 1
+
+
+def test_a_late_check_still_sends_within_the_cap(store, sent):
+    """The bot was down at 20:00 and comes back at 23:30."""
+    assert send_daily_summary(store, Cfg(), now=_at(5, 23, 30)) is True
+
+
+def test_a_summary_missed_by_more_than_the_cap_is_skipped_not_delivered_stale(store, sent):
+    """Back at 03:00 for a 20:00 summary: noise. The next anchor covers it."""
+    assert send_daily_summary(store, Cfg(), now=_at(6, 3, 0)) is False
+    assert sent == []
+    assert send_daily_summary(store, Cfg(), now=_at(6, 20, 5)) is True
+
+
+def test_the_anchor_is_in_the_configured_timezone(store, sent):
+    """20:00 Athens (EEST, UTC+3) is 17:00 UTC."""
+    assert send_daily_summary(store, AthensCfg(), now=_at(5, 16, 59)) is False
+    assert send_daily_summary(store, AthensCfg(), now=_at(5, 17, 0)) is True
+
+
+def test_the_anchor_stays_at_the_local_hour_across_a_dst_change(store, sent):
+    """Athens leaves summer time on 2026-10-25: 20:00 local moves from 17:00 UTC
+    to 18:00 UTC. A fixed UTC offset would have drifted an hour."""
+    from bot.alerting import summary_anchor
+    tz = ZoneInfo("Europe/Athens")
+    before = summary_anchor(datetime(2026, 10, 24, 18, 0, tzinfo=UTC), 20, tz)
+    after = summary_anchor(datetime(2026, 10, 26, 18, 0, tzinfo=UTC), 20, tz)
+    assert (before.hour, after.hour) == (17, 18)
+    assert before.astimezone(tz).hour == after.astimezone(tz).hour == 20
+
+
+def test_consecutive_summaries_tile_the_days_with_no_gap_and_no_overlap(store, sent):
+    """A trade closed at 21:00 is in the NEXT summary, even when this one went
+    out late: the window ends at the anchor, not at 'now'."""
+    for n, closed in enumerate((_at(5, 19, 0), _at(5, 21, 0))):
+        row = store.record_message(channel_id=-7, message_id=900 + n, raw_text="x")
+        tid, _ = store.create_trade(
+            origin_message_row_id=row, origin_channel_id=-7,
+            origin_message_id=900 + n, asset="BTC", symbol=f"PF_T{n}USD",
+            direction="LONG", intent_margin_usd=Decimal("30"))
+        for state in (TradeState.PARSED, TradeState.VALIDATED,
+                      TradeState.WAITING_FOR_ENTRY, TradeState.CLOSING,
+                      TradeState.CLOSED):
+            store.transition_trade(tid, state)
+        store.update_trade_actuals(tid, realized_pnl=Decimal("10"))
+        with store.transaction() as conn:
+            conn.execute("UPDATE trades SET closed_at = ? WHERE id = ?",
+                         (closed.isoformat(), tid))
+    assert send_daily_summary(store, Cfg(), now=_at(5, 23, 0)) is True      # late
+    assert "across 1 closed trade" in sent[0][2], "the 21:00 close is not in day 5's window"
+    assert send_daily_summary(store, Cfg(), now=_at(6, 20, 0)) is True
+    assert "across 1 closed trade" in sent[1][2], "...it is in day 6's"
+
+
+def test_the_config_reads_hour_and_timezone_from_the_environment():
+    from bot.config import ConfigError, load_config
+    base = {"TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30"}
+    c = load_config({**base, "DAILY_SUMMARY_HOUR": "9", "DAILY_SUMMARY_TZ": "Europe/Athens"},
+                    dotenv_path=None)
+    assert c.daily_summary_hour == 9 and str(c.daily_summary_tz) == "Europe/Athens"
+    assert load_config(base, dotenv_path=None).daily_summary_hour == 20
+    for bad in ({"DAILY_SUMMARY_HOUR": "24"}, {"DAILY_SUMMARY_HOUR": "-1"},
+                {"DAILY_SUMMARY_TZ": "Not/AZone"}):
+        with pytest.raises(ConfigError):
+            load_config({**base, **bad}, dotenv_path=None)
+
+
+def test_the_default_timezone_follows_the_host_not_a_hardcoded_zone(monkeypatch):
+    from bot.config import default_timezone_name
+    monkeypatch.setenv("TZ", "Europe/Vilnius")
+    assert default_timezone_name() == "Europe/Vilnius"
+    monkeypatch.setenv("TZ", "Garbage/Zone")
+    assert default_timezone_name() in {"UTC"} | {default_timezone_name()}

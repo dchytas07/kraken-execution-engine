@@ -62,6 +62,17 @@ def paper_state_path(env: dict[str, str] | None = None,
         base = Path(xdg) if xdg and Path(xdg).is_absolute() else home / ".config"
     return base / "kraken" / "paper" / "futures_state.json"
 
+def paper_lock_path(env: dict[str, str] | None = None,
+                    platform: str | None = None) -> Path:
+    """kraken-cli's paper-state lock file, next to the state file.
+
+    One resolution for everything that needs it (run_bot.sh, the soak harness),
+    so no script hardcodes an OS-specific path again.
+    """
+    state = paper_state_path(env, platform)
+    return state.with_name(state.name + ".lock")
+
+
 UNRESOLVED = ("REQUIRES_REVIEW", "SAFE_ERROR")
 _TERMINAL = ("CLOSED", "CANCELLED", "FAILED")
 

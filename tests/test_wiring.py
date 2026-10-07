@@ -152,6 +152,10 @@ SAFETY_FUNCTIONS = {
     "check_total_margin": "MAX_TOTAL_OPEN_MARGIN across all symbols; fails closed",
     "total_open_margin": "margin committed by every live trade (fails closed if unknown)",
     "_check_symbol_totals": "sum of per-trade quantities must equal the net exchange position",
+    "summary_anchor": "the daily summary fires at a fixed local hour, not 24h after the last send",
+    "liquidation_exit": "a liquidation's exit is attributed to the trade, so its loss is recorded",
+    "exit_pnl": "realised P&L arithmetic shared by the engine and the repair tool",
+    "is_read_only": "only provably read-only CLI commands are ever retried",
     "loop_is_healthy": "heartbeat gate: pings only while sweep and reconcile are fresh",
 }
 

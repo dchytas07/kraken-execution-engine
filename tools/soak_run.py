@@ -26,6 +26,7 @@ from bot.db.store import Store  # noqa: E402
 from bot.exchange.cli import KrakenCli  # noqa: E402
 from bot.exchange.kraken import KrakenCliAdapter  # noqa: E402
 from bot.models import CanonicalAsset, TradeState, TradingMode  # noqa: E402
+from bot.status import paper_lock_path  # noqa: E402
 
 D = Decimal
 ROOT = Path(__file__).parent.parent
@@ -36,8 +37,9 @@ BOT_LOG = RUN / "bot.jsonl"
 REPORT = RUN / "report.json"
 CHANNEL = -999000001
 
-PAPER_LOCK = Path.home() / ("Library/Application Support/kraken/paper/"
-                            "futures_state.json.lock")
+# Resolved like kraken-cli does on THIS os (see bot.status.paper_state_path for
+# the per-OS layout), never hardcoded.
+PAPER_LOCK = paper_lock_path()
 
 DURATION = float(os.environ.get("SOAK_DURATION", "1800"))   # 30 min
 KILL_AT = float(os.environ.get("SOAK_KILL_AT", "720"))      # 12 min
@@ -99,7 +101,6 @@ def start_bot() -> subprocess.Popen:
         "TRADING_MODE": "paper",
         "TRADE_MARGIN_USD": "30",
         "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
-        "DEFAULT_LEVERAGE": "10",
         "MAX_ENTRY_DEVIATION_PERCENT": "2.0",
         "MAX_SIZING_DEVIATION_PERCENT": "10",
         "DB_PATH": str(DB),
