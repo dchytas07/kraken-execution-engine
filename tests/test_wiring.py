@@ -157,6 +157,13 @@ SAFETY_FUNCTIONS = {
     "exit_pnl": "realised P&L arithmetic shared by the engine and the repair tool",
     "is_read_only": "only provably read-only CLI commands are ever retried",
     "loop_is_healthy": "heartbeat gate: pings only while sweep and reconcile are fresh",
+    # 2026-10-07: the high-water mark was looked up under the bare channel id
+    # while rows carry the -100 marked one, so every catch-up re-read 50
+    # messages and the edit recheck never ran.
+    "channel_key": "catch-up resumes from the high-water mark under the STORED channel key",
+    "_channel_key": "resolves the stored channel key, via Telegram for an @username",
+    "_recheck_edits": "edits made while disconnected are still classified",
+    "_alert_catch_up_overflow": "more than CATCH_UP_CAP missed messages alerts instead of skipping silently",
 }
 
 # Properties are accessed without parentheses, so they need their own check.

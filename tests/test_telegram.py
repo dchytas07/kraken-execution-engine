@@ -67,14 +67,19 @@ class FakeClient:
         self.started = False
         self.disconnected = False
         self.fail_get_messages = fail_get_messages
+        self.calls = []
 
     async def start(self):
         self.started = True
 
-    async def get_messages(self, channel, limit=50):
+    async def get_messages(self, channel, limit=50, min_id=0, max_id=0):
+        """Telethon semantics: min_id/max_id are exclusive bounds, newest first."""
+        self.calls.append({"limit": limit, "min_id": min_id, "max_id": max_id})
         if self.fail_get_messages:
             raise RuntimeError("telegram unreachable")
-        return list(reversed(self.history))[:limit]  # newest first
+        msgs = [m for m in self.history
+                if m.id > min_id and (not max_id or m.id < max_id)]
+        return list(reversed(msgs))[:limit]
 
     def on(self, _event):
         def decorator(fn):
@@ -245,7 +250,7 @@ def test_backfill_failure_does_not_prevent_live_processing(rig):
 def test_backfill_is_bounded(rig):
     make, store, exchange = rig
     listener, client = make(history=[FakeMessage(i, "gm") for i in range(1, 500)])
-    listener.backfill_limit = 10
+    listener.initial_window = 10
     run(listener.start())
     assert len(store.open_trades()) == 0
     stored = [i for i in range(1, 500) if store.get_message(CHANNEL_ID, i)]
@@ -389,3 +394,101 @@ def test_backfilled_duplicate_signal_is_deduplicated(rig):
     run(listener2.start())
 
     assert len(exchange.orders) == before, "a reformatted replay opened a second trade"
+
+
+# ==========================================================================
+# Catch-up resumes from the high-water mark under the STORED channel key
+# (2026-10-07: TELEGRAM_CHANNEL=1000000001, rows stored under -1001000000001,
+# so the lookup found nothing and every restart re-read 50 messages)
+# ==========================================================================
+
+BARE_ID = 1000000001           # as TELEGRAM_CHANNEL is configured in production
+STORED_KEY = -1001000000001    # as Telethon stamps the channel's messages
+
+
+@pytest.mark.parametrize("configured", [BARE_ID, str(BARE_ID), STORED_KEY,
+                                        str(STORED_KEY)])
+def test_channel_key_is_the_marked_id_rows_are_stored_under(configured):
+    from bot.telegram.listener import channel_key
+    assert channel_key(configured) == STORED_KEY
+
+
+def test_channel_key_of_a_username_is_left_to_telegram():
+    from bot.telegram.listener import channel_key
+    assert channel_key("@somechannel") is None
+
+
+def _real_channel_listener(rig, tmp_path, history, **kw):
+    make, store, exchange = rig
+    client = FakeClient(history=history)
+    listener = TelegramListener(
+        pipeline=make()[0].pipeline, api_id=1, api_hash="h",
+        channel=BARE_ID,                        # what _parse_channel yields
+        session_path=tmp_path / "secrets" / "t.session",
+        client_factory=lambda: client, **kw,
+    )
+    return listener, client
+
+
+def _msgs(ids, text="gm"):
+    return [FakeMessage(i, text, chat_id=STORED_KEY) for i in ids]
+
+
+def test_catch_up_resumes_after_the_highest_stored_id(rig, tmp_path):
+    make, store, exchange = rig
+    for m in _msgs(range(1, 61)):
+        store.record_message(channel_id=STORED_KEY, message_id=m.id, raw_text="gm")
+    assert store.last_message_id(STORED_KEY) == 60
+
+    listener, client = _real_channel_listener(
+        rig, tmp_path, _msgs(range(1, 63)))
+    run(listener.start())
+
+    assert client.calls[0]["min_id"] == 60, "catch-up did not resume from the mark"
+    assert listener.messages_handled == 2, "already-stored messages were re-read"
+    assert store.get_message(STORED_KEY, 62) is not None
+
+
+def test_catch_up_with_nothing_missed_dispatches_nothing(rig, tmp_path):
+    make, store, exchange = rig
+    for i in range(1, 51):
+        store.record_message(channel_id=STORED_KEY, message_id=i, raw_text="gm")
+    listener, _ = _real_channel_listener(rig, tmp_path, _msgs(range(1, 51)))
+    run(listener.start())
+    assert listener.messages_handled == 0
+
+
+def test_catch_up_cap_defaults_to_500(rig, tmp_path):
+    listener, _ = _real_channel_listener(rig, tmp_path, [])
+    assert listener.catch_up_cap == 500
+
+
+def test_catch_up_beyond_the_cap_replays_newest_and_alerts(rig, tmp_path,
+                                                           monkeypatch):
+    make, store, exchange = rig
+    sent = []
+    monkeypatch.setattr("bot.telegram.listener.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    store.record_message(channel_id=STORED_KEY, message_id=1, raw_text="gm")
+    listener, client = _real_channel_listener(
+        rig, tmp_path, _msgs(range(1, 17)), catch_up_cap=10)   # 15 missed
+
+    run(listener.start())
+
+    assert client.calls[0]["limit"] == 11
+    replayed = [i for i in range(2, 17) if store.get_message(STORED_KEY, i)]
+    assert replayed == list(range(7, 17)), "must replay the NEWEST cap messages"
+    assert len(sent) == 1 and "cap hit" in sent[0] and "before 7" in sent[0]
+
+
+def test_catch_up_exactly_at_the_cap_does_not_alert(rig, tmp_path, monkeypatch):
+    make, store, exchange = rig
+    sent = []
+    monkeypatch.setattr("bot.telegram.listener.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
+    store.record_message(channel_id=STORED_KEY, message_id=1, raw_text="gm")
+    listener, _ = _real_channel_listener(
+        rig, tmp_path, _msgs(range(1, 12)), catch_up_cap=10)   # exactly 10 missed
+    run(listener.start())
+    assert sent == []
+    assert all(store.get_message(STORED_KEY, i) for i in range(2, 12))

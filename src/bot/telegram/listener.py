@@ -12,9 +12,10 @@ never used for identity — brief 5 forbids it, and reposts differ in whitespace
 
 **Backfill on reconnect.** Telethon delivers live events, but a message that
 arrives while the process is down is simply never delivered. On start and after
-every reconnect the listener replays messages newer than the highest id already
-stored, so a restart does not silently skip signals. Replayed messages are
-deduplicated by the same identity check, so replay is free of side effects.
+every reconnect the listener fetches exactly the messages newer than the highest
+id already stored for this channel (at most CATCH_UP_CAP of them; more than
+that alerts), so a restart does not silently skip signals. Replayed messages
+are deduplicated by the same identity check, so replay is free of side effects.
 
 The listener owns no trading logic. It converts Telegram events into pipeline
 calls and nothing else.
@@ -26,10 +27,44 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..alerting import send_alert
 from ..logging_setup import get_logger
 from ..pipeline import SignalPipeline
 
 log = get_logger(__name__)
+
+# Most messages replayed after an outage. Above it the OLDEST missed messages
+# are not replayed and the operator is alerted: the bot must never claim it
+# caught up when it did not.
+CATCH_UP_CAP = 500
+# With nothing stored yet there is no high-water mark to resume from, so the
+# first start reads only this much recent history.
+INITIAL_WINDOW = 50
+# Already-stored messages re-read on start to catch edits made while down
+# (an edit is never delivered live to a disconnected client).
+EDIT_RECHECK_WINDOW = 50
+
+# Telethon stamps a channel's messages with its "marked" id: -100 followed by
+# the bare id, i.e. -(10**12 + id). That is the key rows are stored under.
+_CHANNEL_MARK = 10**12
+
+
+def channel_key(channel) -> int | None:
+    """The chat id stored rows carry for this configured channel.
+
+    TELEGRAM_CHANNEL may be the bare id (1000000001) or the marked one
+    (-1001000000001); messages always arrive with the marked one. Looking
+    the high-water mark up under the bare id finds nothing, which silently
+    turned every catch-up into a full re-read. None for an @username: that
+    can only be resolved through Telegram (see TelegramListener._channel_key).
+    """
+    if isinstance(channel, bool):
+        return None
+    try:
+        n = int(channel)
+    except (TypeError, ValueError):
+        return None
+    return n if n < 0 else -(_CHANNEL_MARK + n)
 
 
 def media_kind(message) -> str | None:
@@ -83,14 +118,16 @@ class TelegramListener:
         channel: str,
         session_path: Path,
         client_factory=None,
-        backfill_limit: int = 50,
+        catch_up_cap: int = CATCH_UP_CAP,
+        initial_window: int = INITIAL_WINDOW,
     ) -> None:
         self.pipeline = pipeline
         self.api_id = api_id
         self.api_hash = api_hash
         self.channel = channel
         self.session_path = session_path
-        self.backfill_limit = backfill_limit
+        self.catch_up_cap = catch_up_cap
+        self.initial_window = initial_window
         self._client_factory = client_factory
         self._client = None
         self.messages_handled = 0
@@ -243,22 +280,37 @@ class TelegramListener:
     # -- backfill --------------------------------------------------------
 
     async def backfill(self) -> int:
-        """Replay messages missed while disconnected.
+        """Replay messages missed while disconnected; returns how many.
 
-        Bounded by `backfill_limit` so a long outage cannot dump an unbounded
-        history into the pipeline. Anything older than the limit is reported
-        rather than silently dropped — the operator should know signals were
-        missed.
+        Resumes from the highest Telegram id stored for this channel and asks
+        Telegram for exactly the messages after it (`min_id`), at most
+        `catch_up_cap`. If more than that were missed, the newest
+        `catch_up_cap` are replayed and the operator is ALERTED that older
+        ones were not: a gap is reported, never silently skipped.
+
+        Separately, the last EDIT_RECHECK_WINDOW stored messages are re-read
+        so an edit made while we were down is still classified.
         """
         if self._client is None:
             return 0
 
-        last_seen = self.pipeline.store.last_message_id(self._channel_id())
-        replayed = 0
-        try:
-            messages = await self._client.get_messages(
-                self.channel, limit=self.backfill_limit
+        key = await self._channel_key()
+        last_seen = (self.pipeline.store.last_message_id(key)
+                     if key is not None else None)
+        if key is None:
+            log.warning(
+                f"cannot resolve the stored key for channel {self.channel!r}; "
+                f"catch-up falls back to the latest {self.initial_window} messages",
+                extra={"action": "backfill_no_channel_key"},
             )
+        try:
+            if last_seen is None:
+                messages = list(await self._client.get_messages(
+                    self.channel, limit=self.initial_window))
+            else:
+                # One over the cap tells "exactly at the cap" from "beyond it".
+                messages = list(await self._client.get_messages(
+                    self.channel, limit=self.catch_up_cap + 1, min_id=last_seen))
         except Exception:
             log.error(
                 "backfill failed; live messages will still be processed",
@@ -267,37 +319,80 @@ class TelegramListener:
             )
             return 0
 
+        if last_seen is not None and len(messages) > self.catch_up_cap:
+            messages = messages[:self.catch_up_cap]      # newest first: keep newest
+            self._alert_catch_up_overflow(last_seen, messages)
+
         # get_messages returns newest first; replay oldest first so ordering
         # matches how the channel actually posted them.
-        for message in reversed(list(messages)):
+        replayed = 0
+        for message in reversed(messages):
             inbound = self.to_inbound(message)
             if inbound is None:
                 continue
             if last_seen is not None and inbound.message_id <= last_seen:
-                # Already stored. An edit made while we were down is never
-                # delivered live, so compare against the last version we hold.
-                if inbound.edit_date and self._changed_since_stored(inbound):
-                    edited = self.to_inbound(message, edited=True)
-                    if edited is not None and self.dispatch(edited):
-                        replayed += 1
-                continue
+                continue                                  # never re-dispatch stored ids
             if self.dispatch(inbound):
                 replayed += 1
 
+        if last_seen is not None:
+            await self._recheck_edits(last_seen)
+
         if replayed:
             log.warning(
-                f"backfilled {replayed} message(s) that arrived while disconnected",
+                f"backfilled {replayed} message(s) that arrived while disconnected"
+                + (f" (after stored id {last_seen})" if last_seen is not None else
+                   " (no stored high-water mark: initial window)"),
                 extra={"action": "backfill", "count": replayed},
             )
         return replayed
+
+    async def _recheck_edits(self, last_seen: int) -> int:
+        """Re-read recent STORED messages and dispatch any edited since."""
+        try:
+            recent = await self._client.get_messages(
+                self.channel, limit=EDIT_RECHECK_WINDOW, max_id=last_seen + 1)
+        except Exception:
+            log.error("edit recheck after reconnect failed", exc_info=True,
+                      extra={"action": "backfill_edit_recheck_failed"})
+            return 0
+        rechecked = 0
+        for message in reversed(list(recent)):
+            inbound = self.to_inbound(message)
+            if inbound is None or not inbound.edit_date:
+                continue
+            if self._changed_since_stored(inbound):
+                edited = self.to_inbound(message, edited=True)
+                if edited is not None and self.dispatch(edited):
+                    rechecked += 1
+        return rechecked
+
+    def _alert_catch_up_overflow(self, last_seen: int, kept) -> None:
+        oldest_kept = min((getattr(m, "id", 0) for m in kept), default=0)
+        text = (
+            f"⚠️ Telegram catch-up cap hit: more than {self.catch_up_cap} "
+            f"messages arrived while the bot was down.\n"
+            f"Replayed the newest {self.catch_up_cap} (ids {oldest_kept}+). "
+            f"Messages after stored id {last_seen} and before {oldest_kept} "
+            f"were NOT processed — check the channel by hand."
+        )
+        log.error(text, extra={"action": "backfill_cap_hit",
+                               "last_seen": last_seen, "oldest_kept": oldest_kept})
+        config = self.pipeline.config
+        send_alert(config.alert_telegram_bot_token,
+                   config.alert_telegram_chat_id, text)
 
     def _changed_since_stored(self, inbound: InboundMessage) -> bool:
         store = self.pipeline.store
         last = store.latest_message_version(inbound.channel_id, inbound.message_id)
         return last is not None and last["text_hash"] != store.text_hash(inbound.text)
 
-    def _channel_id(self) -> int | None:
+    async def _channel_key(self) -> int | None:
+        key = channel_key(self.channel)
+        if key is not None:
+            return key
+        # An @username: ask Telethon for the peer id (served from its cache).
         try:
-            return int(self.channel)
-        except (TypeError, ValueError):
+            return int(await self._client.get_peer_id(self.channel))
+        except Exception:
             return None

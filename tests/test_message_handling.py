@@ -562,8 +562,10 @@ class FakeTg:
     def on(self, _e):
         return lambda fn: fn
 
-    async def get_messages(self, channel, limit=50):
-        return list(reversed(self.history))[:limit]
+    async def get_messages(self, channel, limit=50, min_id=0, max_id=0):
+        msgs = [m for m in self.history
+                if m.id > min_id and (not max_id or m.id < max_id)]
+        return list(reversed(msgs))[:limit]
 
 
 def make_listener(pipeline, tmp_path, history=()):
