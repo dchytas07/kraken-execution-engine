@@ -240,7 +240,7 @@ def config(tmp_path):
     return load_config(
         {
             "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-            "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+            "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
             "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
             "DB_PATH": str(tmp_path / "t.db"),
             "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
@@ -626,10 +626,12 @@ def test_verification_failure_enters_safe_error(setup):
     protected(engine, exchange, trade_id, uid)
     reach_tp2(store, trade_id)
 
-    # Inject a rogue second stop, as a partially-completed replacement would.
+    # Inject a rogue second stop FOR THIS TRADE, as a partially-completed
+    # replacement would. (A stop belonging to another trade is not a duplicate:
+    # see tests/test_multi_trade.py.)
     rogue = list(exchange.orders.values())[-1]
     exchange.orders["ROGUE"] = replace_order(
-        rogue, exchange_order_id="ROGUE", client_order_id="rogue"
+        rogue, exchange_order_id="ROGUE", client_order_id=f"{uid}-SL-99"
     )
 
     assert not engine.move_stop_to_breakeven(

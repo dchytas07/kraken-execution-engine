@@ -18,7 +18,8 @@ Three rules govern every method here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -176,6 +177,7 @@ class ExecutionEngine:
         entry_prices: tuple[Decimal, ...],
         signal_leverage: Decimal | None,
         stop_loss: Decimal,
+        exclude_trade_id: int | None = None,
     ) -> EntryPlan:
         """Split margin 50/50 across the entry prices and size each one.
 
@@ -246,7 +248,8 @@ class ExecutionEngine:
             stop_loss, spec.tick_size, round_up=is_short
         )
         self._require_stop_inside_liquidation(
-            spec.symbol, direction, snapped_entries, snapped_stop, leverage
+            spec.symbol, direction, snapped_entries, snapped_stop, leverage,
+            exclude_trade_id=exclude_trade_id,
         )
 
         allocations = split_entry_allocations(
@@ -275,6 +278,78 @@ class ExecutionEngine:
             stop_loss=snapped_stop,
         )
 
+    def _sibling_levels(self, symbol: str, exclude_trade_id: int | None):
+        """(trade id, entry prices, stop) of the OTHER live trades on `symbol`.
+
+        Trades that have not yet placed orders (RECEIVED..VALIDATED) hold no
+        exposure and are skipped; the trade being planned is one of them.
+        """
+        out = []
+        for t in self.store.active_trades_for_symbol(symbol):
+            if t["id"] == exclude_trade_id:
+                continue
+            if TradeState(t["state"]) in (
+                TradeState.RECEIVED, TradeState.PARSED, TradeState.VALIDATED
+            ):
+                continue
+            entries = tuple(
+                Decimal(x) for x in json.loads(t["intent_entry_prices_json"] or "[]")
+            )
+            stop = Decimal(t["intent_stop_loss"]) if t["intent_stop_loss"] else None
+            out.append((t["id"], entries, stop))
+        return out
+
+    def _liquidation_findings(
+        self,
+        symbol: str,
+        direction: Direction,
+        entries: tuple[Decimal, ...],
+        stop: Decimal,
+        leverage: Decimal,
+        exclude_trade_id: int | None,
+    ) -> list[str]:
+        """Every stop that liquidation would beat, as sentences. Empty = safe.
+
+        Kraken nets positions, so trades on one symbol are ONE position with one
+        liquidation price, computed from their COMBINED average entry. The
+        average lies somewhere between the extreme entries, so each trade's
+        stop is checked against the worst case: liquidation measured from the
+        entry farthest from it among ALL the trades' entries. A trade that was
+        safe on its own can stop being safe once another trade joins it: a
+        long entered lower than the combined average is liquidated sooner than
+        its own entries suggested.
+        """
+        is_short = direction is Direction.SHORT
+        siblings = self._sibling_levels(symbol, exclude_trade_id)
+        pool = tuple(entries) + tuple(e for _, es, _ in siblings for e in es)
+        stops = [("this trade", stop, True)] + [
+            (f"trade #{tid}", st, False) for tid, _, st in siblings if st is not None
+        ]
+        findings = []
+        for who, st, is_new in stops:
+            try:
+                safe = max_leverage_for_stop(
+                    pool, st, is_short=is_short,
+                    buffer_percent=self.config.stop_liquidation_buffer_percent,
+                )
+            except SizingError as exc:
+                if not is_new and exc.reason == "STOP_WRONG_SIDE":
+                    continue          # a stop already past entry locks in profit
+                raise
+            if safe >= leverage:
+                continue
+            distance = stop_distance(pool, st, is_short=is_short) * 100
+            far = min(pool) if is_short else max(pool)
+            liq = estimated_liquidation_price(far, leverage, is_short=is_short)
+            where = "" if len(pool) == len(entries) else " (combined with the other trades)"
+            findings.append(
+                f"{who}: stop {st} is {distance:.2f}% from entry {far}{where}; at "
+                f"the fixed {leverage}x est. liquidation {liq:.2f} (MMR 2%) comes "
+                f"before it (it needs <={safe}x with a "
+                f"{self.config.stop_liquidation_buffer_percent}pt buffer)"
+            )
+        return findings
+
     def _require_stop_inside_liquidation(
         self,
         symbol: str,
@@ -282,34 +357,28 @@ class ExecutionEngine:
         entries: tuple[Decimal, ...],
         stop: Decimal,
         leverage: Decimal,
+        exclude_trade_id: int | None = None,
     ) -> None:
         """Refuse (STOP_BEYOND_LIQUIDATION) a stop that liquidation would beat.
 
         Leverage is fixed, so the only remedy for a stop that is too far away is
         not to trade it. The distance is measured from the entry FARTHEST from
-        the stop (the worst case if only that entry fills).
+        the stop (the worst case if only that entry fills), and across every
+        trade sharing the symbol: joining another trade must not leave EITHER
+        trade's stop beyond the combined position's liquidation.
         """
-        is_short = direction is Direction.SHORT
         try:
-            safe = max_leverage_for_stop(
-                entries, stop, is_short=is_short,
-                buffer_percent=self.config.stop_liquidation_buffer_percent,
+            findings = self._liquidation_findings(
+                symbol, direction, entries, stop, leverage, exclude_trade_id
             )
         except SizingError as exc:
             raise ExecutionRefused(exc.reason, exc.detail) from exc
-        if safe >= leverage:
+        if not findings:
             return
-
-        distance = stop_distance(entries, stop, is_short=is_short) * 100
-        far = min(entries) if is_short else max(entries)
-        liq = estimated_liquidation_price(far, leverage, is_short=is_short)
-        buffer = self.config.stop_liquidation_buffer_percent
         text = (
-            f"REFUSED {symbol} {direction.value}: stop {stop} is {distance:.2f}% "
-            f"from entry {far}, but at the fixed {leverage}x est. liquidation "
-            f"{liq:.2f} (MMR 2%) comes before it (a stop must trigger {buffer}pt "
-            f"earlier; this stop would need <={safe}x). Not opened "
-            "(STOP_BEYOND_LIQUIDATION)."
+            f"REFUSED {symbol} {direction.value}: "
+            + "; ".join(findings)
+            + ". Not opened (STOP_BEYOND_LIQUIDATION)."
         )
         log.warning(text, extra={"symbol": symbol,
                                  "action": "stop_beyond_liquidation"})
@@ -317,22 +386,22 @@ class ExecutionEngine:
                    self.config.alert_telegram_chat_id, text)
         raise ExecutionRefused("STOP_BEYOND_LIQUIDATION", text)
 
-    def check_stop_inside_liquidation(self, plan: EntryPlan) -> None:
+    def check_stop_inside_liquidation(
+        self, plan: EntryPlan, exclude_trade_id: int | None = None
+    ) -> None:
         """Defence in depth at submission: a hand-built or stale plan whose
         leverage would liquidate before its stop never reaches the exchange."""
         try:
-            safe = max_leverage_for_stop(
+            findings = self._liquidation_findings(
+                plan.symbol, plan.direction,
                 tuple(p for p, _ in plan.entries), plan.stop_loss,
-                is_short=plan.direction is Direction.SHORT,
-                buffer_percent=self.config.stop_liquidation_buffer_percent,
+                plan.leverage, exclude_trade_id,
             )
         except SizingError as exc:
             raise ExecutionRefused(exc.reason, exc.detail) from exc
-        if plan.leverage > safe:
+        if findings:
             raise ExecutionRefused(
-                "STOP_BEYOND_LIQUIDATION",
-                f"plan carries {plan.leverage}x but stop {plan.stop_loss} is only "
-                f"inside liquidation up to {safe}x",
+                "STOP_BEYOND_LIQUIDATION", "; ".join(findings)
             )
 
     def entry_deviation_limit(self, spec: InstrumentSpec) -> Decimal:
@@ -441,7 +510,7 @@ class ExecutionEngine:
                 f"plan carries {plan.leverage}x but every trade runs at a "
                 f"fixed {self.config.fixed_leverage}x",
             )
-        self.check_stop_inside_liquidation(plan)
+        self.check_stop_inside_liquidation(plan, exclude_trade_id=trade_id)
         self.client.set_leverage_preference(spec.symbol, plan.leverage)
         # What the trade actually opened at. Recorded for the audit trail: the
         # trade row first holds the SIGNAL's number, which is not what ran.
@@ -539,6 +608,87 @@ class ExecutionEngine:
         )
         return submitted
 
+    # ------------------------------------------------------------------
+    # Per-trade exposure (several trades may share one netted position)
+    # ------------------------------------------------------------------
+
+    def _refresh_order_fills(self, trade_id: int) -> None:
+        """Bring every non-final order row of the trade up to date with fills.
+
+        Only fills that have INCREASED are written, and only fill columns plus
+        the status that follows from them, so this never clobbers the INTENT /
+        UNKNOWN states recovery resolves.
+        """
+        for row in self.store.orders_for_trade(trade_id):
+            if OrderStatus(row["status"]).is_final:
+                continue
+            observed = self.observer.observe_order(
+                row["client_order_id"], expected_size=Decimal(row["quantity"])
+            )
+            if observed.filled_size > Decimal(row["filled_quantity"] or 0):
+                self._persist_observation(row["id"], observed)
+
+    def trade_ledger(self, trade_id: int) -> tuple[Decimal, Decimal]:
+        """(remaining quantity, average entry) from THIS trade's own orders.
+
+        Remaining = entry fills - exit fills (stop, take-profit, close), taken
+        from the order rows after refreshing them from the exchange. Fills are
+        attributed by client order id, which carries the trade's uid, so two
+        trades on one symbol never mix.
+        """
+        self._refresh_order_fills(trade_id)
+        entries = Decimal(0)
+        notional = Decimal(0)
+        exits = Decimal(0)
+        for row in self.store.orders_for_trade(trade_id):
+            filled = Decimal(row["filled_quantity"] or 0)
+            if filled <= 0:
+                continue
+            if row["purpose"] == OrderPurpose.ENTRY.value:
+                entries += filled
+                notional += filled * Decimal(row["avg_fill_price"] or 0)
+            else:
+                exits += filled
+        remaining = max(entries - exits, Decimal(0))
+        return remaining, (notional / entries if entries > 0 else Decimal(0))
+
+    def trade_position(self, trade_id: int) -> Position | None:
+        """THIS trade's own exposure, as a Position. Never the netted symbol
+        position unless the trade is the only one on its symbol.
+
+        Kraken nets positions per symbol. With a single active trade the
+        exchange position IS the trade, and is used directly (the exchange is
+        authoritative, and this is exactly the pre-multi-trade behaviour). With
+        several trades sharing the symbol, the exchange cannot say which part is
+        whose, so the trade's own ledger is used, capped at what the exchange
+        actually holds. Reconciliation verifies that the ledgers of all trades on
+        a symbol sum to the exchange position.
+        """
+        trade = self.store.get_trade(trade_id)
+        if trade is None or TradeState(trade["state"]).is_terminal:
+            return None
+        symbol = trade["symbol"]
+        net = self.observer.observe_position(symbol)
+        if net is None or net.is_flat:
+            return None
+        if len(self.store.active_trades_for_symbol(symbol)) <= 1:
+            return net
+        remaining, avg_entry = self.trade_ledger(trade_id)
+        if remaining <= 0:
+            return None
+        return replace(
+            net, size=min(remaining, net.size),
+            entry_price=avg_entry if avg_entry > 0 else net.entry_price,
+        )
+
+    def symbol_exposure(self, symbol: str) -> Decimal:
+        """What the live trades on `symbol` say they hold, in total."""
+        return sum(
+            (self.trade_ledger(t["id"])[0]
+             for t in self.store.active_trades_for_symbol(symbol)),
+            Decimal(0),
+        )
+
     def sync_entry_fills(self, trade_id: int) -> Position | None:
         """Observe entry orders and advance state on CONFIRMED fills only.
 
@@ -573,7 +723,7 @@ class ExecutionEngine:
             if observed.resting:
                 all_done = False
 
-        position = self.observer.observe_position(symbol)
+        position = self.trade_position(trade_id)
         actual_size = position.size if position else Decimal(0)
 
         if actual_size > 0:
@@ -927,7 +1077,7 @@ class ExecutionEngine:
                 f"{direction.value}; it would trigger immediately"
             )
 
-        position = self.observer.observe_position(spec.symbol)
+        position = self.trade_position(trade_id)
         has_position = position is not None and not position.is_flat
         if stop_row is None or not has_position:
             # Nothing live to amend (still waiting for entry, or the stop has
@@ -991,22 +1141,30 @@ class ExecutionEngine:
     def _verify_stop(
         self, trade_id: int, exchange_order_id: str, expected_size: Decimal
     ) -> bool:
-        """Confirm exactly one stop exists with the right size.
+        """Confirm exactly one stop exists FOR THIS TRADE with the right size.
 
-        Trigger price is deliberately NOT asserted: the paper engine omits
-        `stop_price` from open orders entirely (KRAKEN_NOTES 4.2), so requiring
-        it would make every paper run fail. Size, existence, uniqueness and
-        reduce-only ARE verified in both engines. Stage 7 adds the trigger-price
-        assertion once live behaviour is confirmed.
+        Scoped to the trade (its client order ids carry its uid), not the whole
+        account: with several trades on a symbol each has its own stop, and
+        counting every stop on the account would call two healthy stops a
+        duplicate. Trigger price is deliberately NOT asserted: the paper engine
+        omits `stop_price` from open orders entirely (KRAKEN_NOTES 4.2), so
+        requiring it would make every paper run fail. Size, existence,
+        uniqueness and reduce-only ARE verified in both engines. Stage 7 adds
+        the trigger-price assertion once live behaviour is confirmed.
         """
+        uid = self.store.get_trade(trade_id)["trade_uid"]
         orders = self.client.get_open_orders()
-        stops = [o for o in orders if o.order_type == "stop"]
+        stops = [
+            o for o in orders
+            if o.order_type == "stop"
+            and (o.client_order_id or "").startswith(f"{uid}-")
+        ]
 
         if len(stops) != 1:
             self.store.append_event(
                 EventType.SL_REPLACEMENT_FAILED,
-                f"expected exactly 1 stop, found {len(stops)} — possible duplicate "
-                "or missing protective stop",
+                f"expected exactly 1 stop for this trade, found {len(stops)} — "
+                "possible duplicate or missing protective stop",
                 trade_id=trade_id,
                 severity="ERROR",
             )
@@ -1329,7 +1487,7 @@ class ExecutionEngine:
         A close request that is submitted but unconfirmed leaves the trade
         open. Returning False means "not closed", never "probably closed".
         """
-        position = self.observer.observe_position(spec.symbol)
+        position = self.trade_position(trade_id)
         if position is None or position.is_flat:
             return self._finalise_close(trade_id, spec.symbol)
 
@@ -1403,7 +1561,7 @@ class ExecutionEngine:
         if percentage is not None:
             # A partial close never closes the trade. Re-read the position and
             # shrink the stop to cover exactly what remains (brief 14).
-            remaining = self.observer.observe_position(spec.symbol)
+            remaining = self.trade_position(trade_id)
             if remaining and not remaining.is_flat:
                 self.store.update_trade_actuals(
                     trade_id, actual_quantity=remaining.size
@@ -1422,7 +1580,12 @@ class ExecutionEngine:
                 self.store.transition_trade(trade_id, TradeState.CLOSING)
             return self._finalise_close(trade_id, spec.symbol)
 
-        if not self.observer.await_flat(spec.symbol):
+        # THIS trade flat, not the symbol: another trade may keep the netted
+        # position open.
+        if not self.observer.await_true(
+            lambda: self.trade_position(trade_id) is None,
+            what=f"trade {trade_id} ({spec.symbol}) close",
+        ):
             self.store.append_event(
                 EventType.RECONCILE_MISMATCH,
                 "close submitted but the position is NOT confirmed flat — trade "

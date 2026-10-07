@@ -42,7 +42,7 @@ TPS = [D(65000), D(66000), D(67000), D(68000)]
 def rig(tmp_path):
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
     }, dotenv_path=None)

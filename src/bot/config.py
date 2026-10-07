@@ -105,6 +105,16 @@ class Config:
     # least this many percentage points before the estimated liquidation price
     # (2% maintenance); otherwise the signal is refused, never re-levered.
     stop_liquidation_buffer_percent: Decimal
+    # Same-direction trades allowed to share one symbol. Kraken nets positions
+    # per symbol, so each additional trade shares the exchange position; every
+    # order is tagged per trade and sized to that trade's own quantity.
+    max_trades_per_symbol: int
+    # Ceiling on margin committed across ALL live trades (including ones still
+    # waiting for entry). None = not configured, and a missing limit FAILS
+    # CLOSED: every new trade is refused until it is set. (It is not a startup
+    # error: that would crash-loop the service, and protection of positions
+    # already open must keep running.)
+    max_total_open_margin: Decimal | None
     entry_order_expiry_hours: int
     reconciliation_interval_seconds: int
 
@@ -156,6 +166,11 @@ class Config:
             f"(cap {self.max_leverage}x)",
             f"tradeable: {', '.join(sorted(a.value for a in self.tradeable_assets))}",
             f"kill_switch={self.kill_switch_path} db={self.db_path}",
+            f"max {self.max_trades_per_symbol} same-direction trade(s) per symbol; "
+            + (f"total open margin cap ${self.max_total_open_margin}"
+               if self.max_total_open_margin is not None
+               else "MAX_TOTAL_OPEN_MARGIN NOT SET: ALL NEW TRADES WILL BE "
+                    "REFUSED until it is configured"),
         ]
         if self.gold_pin_active:
             reason = (
@@ -331,6 +346,21 @@ def load_config(
         _decimal(env, "MAX_SIZING_DEVIATION_PERCENT", "5.0"),
     )
 
+    max_trades_per_symbol = _int(env, "MAX_TRADES_PER_SYMBOL", "2")
+    if not 1 <= max_trades_per_symbol <= 4:
+        raise ConfigError(
+            f"MAX_TRADES_PER_SYMBOL={max_trades_per_symbol} must be between 1 and 4"
+        )
+    max_total_open_margin = None
+    if _raw(env, "MAX_TOTAL_OPEN_MARGIN"):
+        max_total_open_margin = _positive(
+            "MAX_TOTAL_OPEN_MARGIN", _decimal(env, "MAX_TOTAL_OPEN_MARGIN", "0")
+        )
+        if max_total_open_margin < trade_margin_usd:
+            raise ConfigError(
+                f"MAX_TOTAL_OPEN_MARGIN={max_total_open_margin} is below one "
+                f"trade's margin ({trade_margin_usd}); no trade could ever open"
+            )
     stop_liquidation_buffer_percent = _decimal(env, "STOP_LIQ_BUFFER_PCT", "1.0")
     if stop_liquidation_buffer_percent < 0:
         raise ConfigError(
@@ -398,6 +428,8 @@ def load_config(
         max_entry_deviation_percent=max_entry_deviation_percent,
         max_sizing_deviation_percent=max_sizing_deviation_percent,
         stop_liquidation_buffer_percent=stop_liquidation_buffer_percent,
+        max_trades_per_symbol=max_trades_per_symbol,
+        max_total_open_margin=max_total_open_margin,
         entry_order_expiry_hours=entry_order_expiry_hours,
         reconciliation_interval_seconds=reconciliation_interval_seconds,
         telegram_api_id=telegram_api_id,

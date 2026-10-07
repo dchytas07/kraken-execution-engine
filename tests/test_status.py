@@ -62,7 +62,7 @@ def rig(tmp_path, monkeypatch):
 
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "DB_PATH": str(db), "KILL_SWITCH_PATH": str(tmp_path / "K"),
     }, dotenv_path=None)

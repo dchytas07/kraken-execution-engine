@@ -98,7 +98,7 @@ def start_bot() -> subprocess.Popen:
         **os.environ,
         "TRADING_MODE": "paper",
         "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "DEFAULT_LEVERAGE": "10",
         "MAX_ENTRY_DEVIATION_PERCENT": "2.0",
         "MAX_SIZING_DEVIATION_PERCENT": "10",

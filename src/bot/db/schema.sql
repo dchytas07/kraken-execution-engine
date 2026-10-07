@@ -127,13 +127,12 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_state  ON trades (state);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades (symbol);
 
--- Enforces the one-active-trade-per-symbol rule (docs/PLAN.md 4.1) in the
--- database rather than only in application logic. Kraken nets positions per
--- symbol, so two concurrent trades on one symbol cannot be protected
--- independently. Partial index: only non-terminal trades occupy a symbol.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_one_active_per_symbol
-    ON trades (symbol)
-    WHERE state NOT IN ('CLOSED', 'CANCELLED', 'FAILED');
+-- This used to be a UNIQUE partial index enforcing one active trade per symbol
+-- (docs/PLAN.md 4.1). Up to MAX_TRADES_PER_SYMBOL same-direction trades may now
+-- share a symbol; Store.create_trade enforces the cap and the direction rule
+-- atomically inside its IMMEDIATE transaction. The old index must be dropped or
+-- it would still reject the second trade on an existing database.
+DROP INDEX IF EXISTS idx_trades_one_active_per_symbol;
 
 -- ---------------------------------------------------------------------------
 -- Orders. A row is written with status INTENT *before* submission, so a crash

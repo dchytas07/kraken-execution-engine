@@ -50,7 +50,7 @@ def rig(tmp_path, monkeypatch):
                         lambda config, **kw: alerts.append(kw) or True)
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
     }, dotenv_path=None)
@@ -340,7 +340,7 @@ def test_manual_cancel_before_entry_cancels_the_trade(rig):
     assert r.accepted and r.action == "CANCEL_TRADE"
     assert store.get_trade(r0.trade_id)["state"] == TradeState.CANCELLED.value
     assert exchange.get_open_orders() == []
-    assert store.get_active_trade_for_symbol("PF_XBTUSD") is None
+    assert store.active_trades_for_symbol("PF_XBTUSD") == []
     assert alerts == []
 
 

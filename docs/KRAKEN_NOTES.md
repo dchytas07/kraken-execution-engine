@@ -922,3 +922,47 @@ leaves the gate shut and startup exits non-zero.
   stayed labelled WAITING_FOR_ENTRY. Protection was correct (the stop is sized
   from the position, not the label), but a stale label misleads an operator and
   gates later TP transitions. Reconciliation now advances it.
+
+
+## 9. Netting with several trades on one symbol (paper, 2026-10-07)
+
+Measured on an ISOLATED paper account (`XDG_CONFIG_HOME` pointed at a scratch
+directory; the live service's account was never touched, and afterwards contained no
+order or fill from the experiment). kraken-cli 0.4.1, `PF_XBTUSD`, 10x.
+
+**As assumed**
+
+| claim | result |
+|---|---|
+| two entries tagged `A`/`B` net into one position | `positions` returned `count: 1`, size 0.003 (0.001 + 0.002), one weighted entry price |
+| liquidation uses the combined position | `liquidation_price` 76992.04 = entry 83687 x (1 - 1/10 + 0.02), exactly the bot's formula |
+| each trade can rest its own reduce-only stop and TP | accepted; both stops (0.001 and 0.002) rest together with their own `client_order_id`; sizes may sum to the position |
+| fills are attributable by client order id | every fill carries the `client_order_id` of the order that produced it, including `fill_type: triggered` stop fills |
+| an opposite order nets, it does not hedge | a plain sell of 0.0005 against a 0.001 long left a 0.0005 long; a plain sell of 0.003 against it FLIPPED to a single 0.0025 short at a new entry price |
+| a reduce-only order larger than the position is refused | rejected at placement: `Reduce-only: requested size 0.01 exceeds position size 0.003` |
+
+**Divergences / hazards**
+
+1. **Reduce-only orders belong to the net position, not to a trade.** Trade A closed
+   (reduce-only market for its 0.001). Its stop (0.001) and TP (0.0005) were left
+   resting. When the stale stop later triggered it closed 0.001 of trade B's
+   remaining 0.002, with the fill tagged to A. Nothing on the exchange ties an order
+   to a trade, so the bot must cancel a trade's orders when the trade ends and must
+   not mark a trade CLOSED while any remain (`_finalise_close` and
+   `_repair_position_gone` now both enforce this).
+2. **The exchange never resizes or cancels resting reduce-only orders.** A stop sized
+   0.002 stays 0.002 after the position shrinks to 0.0005, and both stops survive the
+   position going completely flat. The size check happens only at placement. So an
+   order's size can be stale indefinitely, and a stale order can fire into a LATER
+   position on the same symbol.
+3. The cumulative size of reduce-only orders is not checked: a third reduce-only order
+   was accepted although the stops already summed to the whole position.
+4. A plain order against the position's direction is the only thing that flips it, so
+   every exit the bot places is reduce-only and an opposite-direction SIGNAL is
+   refused outright.
+
+**Not verifiable on paper (live-only risk).** Whether Kraken's live `fills` carry
+`clientOrderId` for TRIGGERED orders, how far back the live fills history reaches (the
+per-trade ledger relies on persisted order rows precisely because it is bounded), and
+whether live reduce-only validation matches paper. All three are assumptions until a
+live read-only check.

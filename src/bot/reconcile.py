@@ -42,7 +42,7 @@ from .db.store import Store
 from .exchange.base import ExchangeClient, ExchangeError, Fill, Order, Position
 from .execution.engine import ExecutionEngine
 from .execution.observer import ObservedOrder
-from .alerting import notify_trade_event
+from .alerting import notify_trade_event, send_alert
 from .logging_setup import get_logger
 from .models import (
     EventType,
@@ -168,6 +168,10 @@ class SnapshotObserver:
         """
         return self.observe_position(symbol) is None
 
+    def await_true(self, predicate, *, what: str = "", timeout_s=None, poll_s=None) -> bool:
+        """A snapshot cannot wait: answers about the instant it was captured."""
+        return bool(predicate())
+
     def weighted_average_entry(
         self, client_order_ids: list[str]
     ) -> tuple[Decimal, Decimal]:
@@ -193,6 +197,10 @@ class DiscrepancyKind(StrEnum):
     UNTRACKED_ORDER = "UNTRACKED_ORDER"
     FILL_NOT_RECORDED = "FILL_NOT_RECORDED"
     STALE_ENTRY_ORDER = "STALE_ENTRY_ORDER"
+    # The per-trade quantities on a symbol do not add up to the net exchange
+    # position: exposure nobody owns, or trades that think they hold more than
+    # the exchange does.
+    SYMBOL_TOTAL_MISMATCH = "SYMBOL_TOTAL_MISMATCH"
     LEVERAGE_DRIFT = "LEVERAGE_DRIFT"
     TP_EXCEEDS_POSITION = "TP_EXCEEDS_POSITION"
 
@@ -253,6 +261,7 @@ class Reconciler:
         # loud on first sight and on any change, a reduced-frequency reminder
         # after that, and a standing unresolved-findings count on every cycle.
         self._orphan_seen: dict[str, tuple[Decimal, int]] = {}
+        self._total_seen: dict[str, tuple[Decimal, Decimal, int]] = {}
         self.unresolved_findings: dict[str, str] = {}
 
     ORPHAN_REMINDER_EVERY = 5  # cycles
@@ -270,6 +279,7 @@ class Reconciler:
             for trade in open_trades:
                 self._reconcile_trade(trade, snapshot, report)
             self._check_orphan_positions(open_trades, snapshot, report)
+            self._check_symbol_totals(open_trades, snapshot, report)
             self._check_leverage_drift(snapshot, report)
         finally:
             self.engine.observer = original_observer
@@ -283,12 +293,14 @@ class Reconciler:
         trade_id = trade["id"]
         symbol = trade["symbol"]
         state = TradeState(trade["state"])
-        position = snapshot.positions.get(symbol)
-        if position is not None and position.is_flat:
-            position = None
-
         # 1. Fills the local DB has not caught up with.
         self._sync_order_states(trade_id, snapshot, report)
+
+        # THIS trade's exposure, not the symbol's: when trades share a symbol the
+        # exchange only reports the net (see engine.trade_position). Taken after
+        # the sync so a fill recorded just now is counted.
+        position = self.engine.trade_position(trade_id)
+        uid = trade["trade_uid"]
 
         # 1b. Stale entry orders (brief 12). Deliberately BEFORE every early
         #     return below. This used to be the last step, which only a trade
@@ -358,6 +370,7 @@ class Reconciler:
         stops = [
             o for o in snapshot.orders
             if o.order_type == "stop" and o.symbol == symbol
+            and (o.client_order_id or "").startswith(f"{uid}-")
         ]
         if not stops:
             report.discrepancies.append(
@@ -380,6 +393,7 @@ class Reconciler:
         tps = [
             o for o in snapshot.orders
             if o.order_type == "take-profit" and o.symbol == symbol
+            and (o.client_order_id or "").startswith(f"{uid}-")
         ]
         tp_total = sum((o.size for o in tps), Decimal(0))
         if tp_total > position.size:
@@ -611,6 +625,36 @@ class Reconciler:
             f"{symbol} flat on the exchange; closed outside the bot",
             trade_id=trade_id,
         )
+
+        # A trade's resting reduce-only orders belong to the NET position, not to
+        # the trade, and the exchange never resizes or cancels them (measured on
+        # paper 2026-10-07: a stop sized 0.002 stays 0.002 when the position
+        # shrinks to 0.0005, and survives the position going flat). A leftover
+        # stop of a finished trade therefore fires against whichever trade now
+        # holds the symbol, or a later one. So CLOSED means "no order of this
+        # trade remains", and a cancel that did not take effect leaves the trade
+        # in CLOSING to be retried next cycle.
+        uid = self.store.get_trade(trade_id)["trade_uid"]
+        leftovers = [
+            o for o in self.client.get_open_orders()
+            if (o.client_order_id or "").startswith(f"{uid}-")
+        ]
+        if leftovers:
+            log.error(
+                f"trade {trade_id} {symbol}: position gone but {len(leftovers)} "
+                "of its order(s) still rest on the exchange — NOT marking CLOSED "
+                "(a leftover reduce-only order would fire against another "
+                "trade's quantity); will retry",
+                extra={"trade_id": trade_id, "symbol": symbol,
+                       "action": "leftover_orders_after_close"},
+            )
+            return Discrepancy(
+                DiscrepancyKind.POSITION_GONE,
+                f"{symbol} flat for trade {trade_id} but {len(leftovers)} order(s) "
+                "could not be cancelled",
+                trade_id, symbol, repaired=False,
+                repair_detail="left CLOSING; cancel is retried each cycle",
+            )
         self.store.transition_trade(trade_id, TradeState.CLOSED)
         # A stop-out closes the position without ever entering _finalise_close,
         # so realised P&L was left NULL for exactly the trades most worth
@@ -710,6 +754,72 @@ class Reconciler:
                 self.unresolved_findings.pop(f"orphan:{symbol}", None)
                 log.info(f"orphan position on {symbol} is resolved",
                          extra={"symbol": symbol, "action": "orphan_resolved"})
+
+    def _check_symbol_totals(self, open_trades, snapshot, report) -> None:
+        """The trades on a symbol must add up to the exchange's net position.
+
+        Kraken nets positions per symbol, so each trade is accounted for from
+        its OWN orders (engine.trade_ledger) and nothing on the exchange says
+        which part of the net is whose. The only independent check is the sum:
+
+          net > sum   exposure no trade owns (a manual order, a missed fill)
+          net < sum   trades think they hold more than the exchange does
+
+        Never auto-repaired: either way something is unexplained, and closing or
+        resizing on a guess is how a position gets unwound that nobody meant to.
+        Reported on first sight and whenever the numbers change, with a reminder
+        every ORPHAN_REMINDER_EVERY cycles so it cannot go quiet while unresolved.
+        """
+        # Re-read: the per-trade pass above may just have closed or cancelled
+        # trades, and those must not count.
+        by_symbol: dict[str, list] = {}
+        for t in self.store.open_trades():
+            by_symbol.setdefault(t["symbol"], []).append(t)
+
+        current: set[str] = set()
+        for symbol, trades in by_symbol.items():
+            position = snapshot.positions.get(symbol)
+            net = position.size if position is not None and not position.is_flat \
+                else Decimal(0)
+            tracked = self.engine.symbol_exposure(symbol)
+            if net == tracked:
+                continue
+            current.add(symbol)
+            previous = self._total_seen.get(symbol)
+            count = 1 if previous is None else previous[2] + 1
+            changed = previous is None or previous[:2] != (net, tracked)
+            self._total_seen[symbol] = (net, tracked, count)
+
+            ids = ", ".join(f"#{t['id']}" for t in trades)
+            detail = (
+                f"{symbol}: the exchange holds {net} but trade(s) {ids} account "
+                f"for {tracked} ({'UNOWNED exposure' if net > tracked else 'trades expect more than the exchange holds'})"
+            )
+            self.unresolved_findings[f"symbol-total:{symbol}"] = (
+                f"{detail} (unresolved for {count} cycle(s))"
+            )
+            if changed or count % self.ORPHAN_REMINDER_EVERY == 0:
+                log.error(f"SYMBOL TOTAL MISMATCH: {detail} — not repairing "
+                          "automatically",
+                          extra={"symbol": symbol, "action": "symbol_total_mismatch",
+                                 "cycles_unresolved": count})
+                self.store.append_event(
+                    EventType.RECONCILE_MISMATCH, detail, severity="ERROR")
+                if changed:
+                    send_alert(self.config.alert_telegram_bot_token,
+                               self.config.alert_telegram_chat_id,
+                               f"⚠️ {detail}. Nothing was changed; please look.")
+            report.discrepancies.append(
+                Discrepancy(DiscrepancyKind.SYMBOL_TOTAL_MISMATCH, detail,
+                            symbol=symbol)
+            )
+
+        for symbol in list(self._total_seen):
+            if symbol not in current:
+                del self._total_seen[symbol]
+                self.unresolved_findings.pop(f"symbol-total:{symbol}", None)
+                log.info(f"symbol total on {symbol} is reconciled again",
+                         extra={"symbol": symbol, "action": "symbol_total_resolved"})
 
     def _check_leverage_drift(self, snapshot, report) -> None:
         """Study B: a set-leverage that succeeded for a trade which never

@@ -14,7 +14,12 @@ from dataclasses import dataclass, replace
 from .admission import AdmissionResult, SignalAdmission
 from .alerting import notify_trade_event, send_review_alert
 from .config import Config
-from .db.store import DuplicateMessage, Store, SymbolAlreadyActive
+from .db.store import (
+    DuplicateMessage,
+    OppositeDirectionActive,
+    Store,
+    SymbolAlreadyActive,
+)
 from .execution.engine import ExecutionEngine, ExecutionRefused
 from .logging_setup import get_logger
 from .models import (
@@ -94,6 +99,7 @@ def build_admission(
     kill_switch,
     client,
     specs: dict[CanonicalAsset, InstrumentSpec],
+    engine=None,
 ) -> SignalAdmission:
     """Construct the admission gate with BOTH state sources wired.
 
@@ -107,6 +113,7 @@ def build_admission(
         kill_switch=kill_switch,
         symbol_for={asset: spec.symbol for asset, spec in specs.items()},
         position_for=client.get_position,
+        exposure_for=engine.symbol_exposure if engine is not None else None,
     )
 
 
@@ -748,14 +755,17 @@ class SignalPipeline:
                 intent_leverage=parsed.leverage,
                 is_substitute_instrument=spec.is_substitute,
                 substitute_note=spec.substitute_note or None,
+                max_active_per_symbol=self.config.max_trades_per_symbol,
             )
         except SymbolAlreadyActive as exc:
-            # Belt and braces: admission checks this, and the DB enforces it
-            # against a concurrent writer.
+            # Belt and braces: admission checks this, and the store re-checks it
+            # atomically with the insert, against a concurrent writer.
             self.store.record_decision(
                 row_id,
                 ExecutionDecision.REQUIRES_REVIEW,
-                RejectionReason.SYMBOL_ALREADY_ACTIVE,
+                RejectionReason.OPPOSITE_DIRECTION_ACTIVE
+                if isinstance(exc, OppositeDirectionActive)
+                else RejectionReason.SYMBOL_ALREADY_ACTIVE,
                 str(exc),
             )
             return IngestResult(False, row_id, detail=str(exc))
@@ -774,6 +784,7 @@ class SignalPipeline:
                 entry_prices=parsed.entry_range,
                 signal_leverage=parsed.leverage,
                 stop_loss=parsed.stop_loss,
+                exclude_trade_id=trade_id,
             )
             self.engine.open_trade(
                 trade_id=trade_id, trade_uid=trade_uid, spec=spec, plan=plan

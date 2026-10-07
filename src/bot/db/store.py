@@ -49,7 +49,13 @@ class DuplicateMessage(Exception):
 
 
 class SymbolAlreadyActive(Exception):
-    """An active trade already exists for this symbol (docs/PLAN.md 4.1)."""
+    """The symbol already holds as many active trades as are allowed."""
+
+
+class OppositeDirectionActive(SymbolAlreadyActive):
+    """An active trade on this symbol goes the other way. Kraken nets positions
+    per symbol, so an opposite trade would silently shrink or flip the existing
+    one instead of opening beside it."""
 
 
 class Store:
@@ -339,17 +345,34 @@ class Store:
         intent_quantity: Decimal | None = None,
         is_substitute_instrument: bool = False,
         substitute_note: str | None = None,
+        max_active_per_symbol: int = 1,
     ) -> tuple[int, str]:
         """Create a trade in RECEIVED state. Returns (row_id, trade_uid).
 
-        Raises SymbolAlreadyActive if a non-terminal trade already holds the
-        symbol — enforced by a unique partial index, so this holds even against
-        a concurrent writer.
+        Raises SymbolAlreadyActive when the symbol already holds
+        `max_active_per_symbol` non-terminal trades, and OppositeDirectionActive
+        when any of them goes the other way. Both checks and the insert share
+        one IMMEDIATE transaction, so they hold against a concurrent writer too.
         """
         trade_uid = f"T-{uuid.uuid4().hex[:12]}"
         now = _now()
         try:
             with self.transaction() as conn:
+                active = conn.execute(
+                    """SELECT id, direction FROM trades WHERE symbol = ?
+                       AND state NOT IN ('CLOSED','CANCELLED','FAILED')""",
+                    (symbol,),
+                ).fetchall()
+                if any(r["direction"] != direction for r in active):
+                    raise OppositeDirectionActive(
+                        f"{symbol} already has an active trade going the other "
+                        f"way (new {direction})"
+                    )
+                if len(active) >= max_active_per_symbol:
+                    raise SymbolAlreadyActive(
+                        f"{symbol} already has {len(active)} active trade(s); "
+                        f"the limit is {max_active_per_symbol}"
+                    )
                 cur = conn.execute(
                     """INSERT INTO trades
                        (trade_uid, origin_message_row_id, origin_channel_id,
@@ -381,14 +404,7 @@ class Store:
                     ),
                 )
                 return int(cur.lastrowid), trade_uid
-        except sqlite3.IntegrityError as exc:
-            # SQLite reports the partial unique index as a constraint on the
-            # column, not by index name, so match on either form.
-            message = str(exc)
-            if "trades.symbol" in message or "idx_trades_one_active_per_symbol" in message:
-                raise SymbolAlreadyActive(
-                    f"an active trade already exists for {symbol}"
-                ) from exc
+        except sqlite3.IntegrityError:
             raise
 
     def get_trade(self, trade_id: int) -> sqlite3.Row | None:
@@ -396,12 +412,32 @@ class Store:
             "SELECT * FROM trades WHERE id = ?", (trade_id,)
         ).fetchone()
 
-    def get_active_trade_for_symbol(self, symbol: str) -> sqlite3.Row | None:
-        return self._conn.execute(
+    def active_trades_for_symbol(self, symbol: str) -> list[sqlite3.Row]:
+        """Every non-terminal trade on `symbol`, oldest first. More than one
+        means they SHARE the netted exchange position."""
+        return list(self._conn.execute(
             """SELECT * FROM trades WHERE symbol = ?
-               AND state NOT IN ('CLOSED','CANCELLED','FAILED')""",
+               AND state NOT IN ('CLOSED','CANCELLED','FAILED') ORDER BY id""",
             (symbol,),
-        ).fetchone()
+        ).fetchall())
+
+    def total_open_margin(self) -> Decimal:
+        """Margin committed across every non-terminal trade.
+
+        Counted from the trade's own intent_margin_usd, and including trades
+        still waiting for entry: their resting orders reserve margin as soon as
+        they fill, so a limit that ignored them could be breached by entries
+        that have not filled yet.
+        """
+        total = Decimal(0)
+        for row in self._conn.execute(
+            """SELECT intent_margin_usd FROM trades
+               WHERE state NOT IN ('CLOSED','CANCELLED','FAILED')"""
+        ).fetchall():
+            if row["intent_margin_usd"] is None:
+                raise ValueError("a live trade carries no recorded margin")
+            total += Decimal(row["intent_margin_usd"])
+        return total
 
     def open_trades(self) -> list[sqlite3.Row]:
         return list(

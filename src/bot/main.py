@@ -219,7 +219,7 @@ async def run_forever(config: Config, runtime: Runtime) -> int:
         admission=build_admission(
             config=config, store=runtime.store,
             kill_switch=runtime.kill_switch, client=runtime.adapter,
-            specs=runtime.specs,
+            specs=runtime.specs, engine=runtime.engine,
         ),
         engine=runtime.engine, specs=runtime.specs, manager=runtime.manager,
     )

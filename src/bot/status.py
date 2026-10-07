@@ -229,22 +229,28 @@ def build_status(config, *, now: datetime | None = None) -> str:
         L.append(f"  UNAVAILABLE — {note}")
     else:
         problems: list[str] = []
+        # Per SYMBOL: trades sharing a symbol share the netted exchange
+        # position, so only their sum can be compared with it.
+        by_symbol: dict[str, list] = {}
         for t in trades:
-            pos = ex_positions.get(t["symbol"])
-            local = _dec(t["actual_quantity"])
+            by_symbol.setdefault(t["symbol"], []).append(t)
+        for symbol, group in by_symbol.items():
+            pos = ex_positions.get(symbol)
+            local = sum((_dec(t["actual_quantity"]) for t in group), Decimal(0))
+            ids = ", ".join(f"#{t['id']}" for t in group)
             if pos is None:
                 if local > 0:
                     problems.append(
-                        f"#{t['id']} {t['symbol']}: local holds {local}, "
-                        "exchange has NO position")
+                        f"{ids} {symbol}: local holds {local}, exchange has NO "
+                        "position")
                 continue
             if _dec(pos["size"]) != local:
                 problems.append(
-                    f"#{t['id']} {t['symbol']}: size local {local} vs "
-                    f"exchange {pos['size']}")
-            if str(pos["side"]).lower() != t["direction"].lower():
+                    f"{ids} {symbol}: size local {local} vs exchange {pos['size']}")
+            if any(str(pos["side"]).lower() != t["direction"].lower() for t in group):
                 problems.append(
-                    f"#{t['id']} {t['symbol']}: side local {t['direction']} vs "
+                    f"{ids} {symbol}: side local "
+                    f"{'/'.join(sorted({t['direction'] for t in group}))} vs "
                     f"exchange {pos['side']}")
         for o in db["orders"]:
             eo = ex_orders.get(o["client_order_id"])

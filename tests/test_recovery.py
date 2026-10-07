@@ -54,7 +54,7 @@ class Session:
         self.exchange = exchange
         self.config = load_config({
             "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-            "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+            "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
             "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
             "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
             "ALERT_TELEGRAM_BOT_TOKEN": "TEST_BOT_TOKEN",
@@ -735,7 +735,7 @@ def test_quarantined_symbol_refuses_new_signals(session):
 
     restarted = session.crash()
     restarted.recovery.recover()
-    assert restarted.store.get_active_trade_for_symbol("PF_XBTUSD") is not None
+    assert restarted.store.active_trades_for_symbol("PF_XBTUSD")
 
     admission = SignalAdmission(
         config=restarted.config, store=restarted.store,

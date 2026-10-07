@@ -50,7 +50,7 @@ STOP = D(62000)  # 3.1% below the far entry: inside liquidation at 10x
 def rig(tmp_path):
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
     }, dotenv_path=None)
@@ -412,7 +412,7 @@ def test_leverage_drift_escalates_when_reassert_leaves_margin_thin(tmp_path, cap
     about that."""
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
     }, dotenv_path=None)
@@ -776,13 +776,13 @@ def test_overdue_entries_of_a_flat_trade_are_cancelled(rig):
 def test_flat_trade_with_every_entry_expired_is_cancelled_and_frees_the_symbol(rig, tmp_path):
     engine, exchange, store, rec, trade_id, uid = rig
     _open_resting(engine, trade_id, uid)
-    assert store.get_active_trade_for_symbol("PF_XBTUSD") is not None
+    assert store.active_trades_for_symbol("PF_XBTUSD")
     _make_overdue(store)
 
     rec.run_once()
 
     assert store.get_trade(trade_id)["state"] == TradeState.CANCELLED.value
-    assert store.get_active_trade_for_symbol("PF_XBTUSD") is None
+    assert store.active_trades_for_symbol("PF_XBTUSD") == []
 
 
 def test_stale_waiting_trade_no_longer_blocks_a_new_signal(rig, tmp_path):
@@ -791,10 +791,16 @@ def test_stale_waiting_trade_no_longer_blocks_a_new_signal(rig, tmp_path):
     from bot.models import RejectionReason
     from bot.parser.parse import fingerprint_for, parse_message
 
+    from dataclasses import replace as dc_replace
+
     engine, exchange, store, rec, trade_id, uid = rig
     _open_resting(engine, trade_id, uid)
+    with store.transaction() as conn:       # the rig's trade carries no margin
+        conn.execute("UPDATE trades SET intent_margin_usd = '30'")
+    # One trade per symbol, so the waiting trade occupies it (the default of 2
+    # would simply admit a second trade beside it).
     gate = SignalAdmission(
-        config=engine.config, store=store,
+        config=dc_replace(engine.config, max_trades_per_symbol=1), store=store,
         kill_switch=KillSwitch(path=tmp_path / "KILL"),
         symbol_for={CanonicalAsset.BTC: "PF_XBTUSD"}, position_for=lambda s: None,
     )
@@ -868,7 +874,7 @@ def test_entries_that_filled_and_stopped_out_between_observations_are_recorded(r
     assert D(t["realized_pnl"]) == expected
     assert DiscrepancyKind.FILL_NOT_RECORDED in kinds(report)
     assert DiscrepancyKind.POSITION_GONE in kinds(report)
-    assert store.get_active_trade_for_symbol("PF_XBTUSD") is None
+    assert store.active_trades_for_symbol("PF_XBTUSD") == []
 
 
 def test_ghost_recovery_is_idempotent(rig):

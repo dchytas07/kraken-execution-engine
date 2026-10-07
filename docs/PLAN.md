@@ -130,6 +130,10 @@ Per the brief's own tiebreaker ("Kraken's verified behavior wins", "safety wins"
 
 > **Rule: one active trade per symbol.** A new signal for a symbol that already has an
 > active trade is recorded, classified `REQUIRES_REVIEW`, and **not executed**.
+>
+> **Superseded 2026-10-07** — see "Several trades per symbol" at the end of this
+> document. Up to `MAX_TRADES_PER_SYMBOL` same-direction trades now share a symbol,
+> with every order tagged and sized per trade.
 
 Unlimited concurrency *across* symbols is unaffected. This is not an artificial
 position cap; it is the exchange's actual position model. Flagged explicitly because
@@ -666,3 +670,51 @@ own figure (the channel asks for 5x-75x) is logged and ignored.
   differing value when available margin is thin.
 - `DEFAULT_LEVERAGE` and `MIN_LEVERAGE` are gone. A `.env` that still sets them
   is ignored. `MAX_LEVERAGE` remains a ceiling and must be >= 10.
+
+
+## Several trades per symbol (2026-10-07)
+
+Supersedes the one-trade-per-symbol rule (§4.1). The exchange's position model has
+not changed (one netted position per symbol, no hedge mode); the bot now accounts
+for the trades inside it.
+
+**Admission.**
+- Up to `MAX_TRADES_PER_SYMBOL` (default 2) trades on a symbol, **same direction
+  only**. An opposite-direction signal places no order and sends a review alert:
+  on Kraken it would shrink or flip the existing position, not sit beside it.
+- A symbol with a trade in `REQUIRES_REVIEW`/`SAFE_ERROR` takes no new exposure.
+- `MAX_TOTAL_OPEN_MARGIN` caps margin committed across ALL live trades (including
+  ones still waiting for entry). **It fails closed:** unset, or not computable,
+  means every new trade is refused (with an alert), never "no limit". It is not a
+  startup error, because that would crash-loop the service and stop protecting
+  positions that are already open.
+- The exchange position on the symbol must equal what the live trades say they hold
+  (`engine.symbol_exposure`), otherwise the signal is refused as
+  `UNRECOGNISED_POSITION`.
+
+**Per-trade accounting.** Every order's client order id is `<trade_uid>-<PURPOSE>-<n>`,
+so fills are attributable to a trade. `engine.trade_position(trade_id)` is a trade's
+OWN exposure: the whole exchange position when it is the only trade on its symbol
+(exactly the old behaviour), otherwise its entry fills minus its exit fills, capped
+at what the exchange holds. Stops, TP ladders, breakeven, channel stop updates, closes
+and cancels all work from it. `_verify_stop` checks one stop per TRADE.
+
+**Liquidation.** The combined position has one liquidation price, from the combined
+average entry. At plan time each stop (the new trade's and every sibling's) is
+checked against liquidation measured from the worst-case entry across ALL the trades'
+entries. A second trade can therefore be refused because it would put the FIRST
+trade's stop beyond the combined liquidation.
+
+**Reconciliation / recovery.** Each trade is reconciled against its own quantity,
+stops and TPs; then `_check_symbol_totals` requires the per-trade quantities to sum to
+the exchange's net position (a mismatch is reported and alerted, never auto-repaired).
+Recovery treats a trade's unresolvable order as safe to abandon on a shared symbol only
+when the live trades account for the exchange position exactly.
+
+**Measured on paper** (isolated account, 2026-10-07; see KRAKEN_NOTES.md §9).
+
+## Total open margin and review alerts (operator note)
+
+Before restarting the service on this version, set `MAX_TOTAL_OPEN_MARGIN` in `.env`
+(see `.env.example`). Until it is set the bot runs, protects and reconciles normally
+but refuses every new signal.

@@ -352,6 +352,11 @@ class RejectionReason(StrEnum):
     DUPLICATE_MESSAGE = "DUPLICATE_MESSAGE"
     DUPLICATE_SIGNAL = "DUPLICATE_SIGNAL"
     SYMBOL_ALREADY_ACTIVE = "SYMBOL_ALREADY_ACTIVE"
+    # An active trade on this symbol goes the other way. Kraken nets per symbol,
+    # so an opposite order would shrink or flip it, not sit beside it.
+    OPPOSITE_DIRECTION_ACTIVE = "OPPOSITE_DIRECTION_ACTIVE"
+    # MAX_TOTAL_OPEN_MARGIN would be exceeded, or is not configured (fail closed).
+    TOTAL_MARGIN_LIMIT = "TOTAL_MARGIN_LIMIT"
     UNRECOGNISED_POSITION = "UNRECOGNISED_POSITION"
     POSITION_CHECK_FAILED = "POSITION_CHECK_FAILED"
     STALE_ENTRY = "STALE_ENTRY"

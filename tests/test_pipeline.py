@@ -40,7 +40,7 @@ Leverage: 50x
 def pipe(tmp_path):
     config = load_config({
         "TRADING_MODE": "paper", "TRADE_MARGIN_USD": "30",
-        "MAX_LEVERAGE": "10", "DEFAULT_LEVERAGE": "10",
+        "MAX_LEVERAGE": "10", "MAX_TOTAL_OPEN_MARGIN": "1000",
         "MAX_ENTRY_DEVIATION_PERCENT": "1.5",
         "KILL_SWITCH_PATH": str(tmp_path / "KILL"),
     }, dotenv_path=None)
@@ -147,14 +147,21 @@ def test_raw_message_persisted_before_parsing(pipe):
     assert store.get_message(-100, 1)["raw_text"] == "gm"
 
 
-def test_second_signal_on_occupied_symbol_places_no_orders(pipe):
+def test_second_same_direction_signal_opens_beside_the_first_and_a_third_does_not(pipe):
+    """Up to MAX_TRADES_PER_SYMBOL (default 2) same-direction trades share a
+    symbol; the next one places nothing and goes to review."""
     pipeline, store, exchange, _ = pipe
     pipeline.handle_message(channel_id=-100, message_id=1, text=SIGNAL)
-    before = len(exchange.orders)
-    result = pipeline.handle_message(
+    after_first = len(exchange.orders)
+    second = pipeline.handle_message(
         channel_id=-100, message_id=2, text=SIGNAL.replace("SL: 62500", "SL: 62200"))
-    assert not result.accepted
-    assert len(exchange.orders) == before
+    assert second.accepted
+    assert len(exchange.orders) == after_first * 2
+    third = pipeline.handle_message(
+        channel_id=-100, message_id=3, text=SIGNAL.replace("SL: 62500", "SL: 62100"))
+    assert not third.accepted
+    assert len(exchange.orders) == after_first * 2
+    assert store.get_message(-100, 3)["execution_decision"] == "REQUIRES_REVIEW"
 
 
 # ==========================================================================

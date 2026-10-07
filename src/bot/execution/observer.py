@@ -106,6 +106,10 @@ class FillObserver(Protocol):
         self, symbol: str, *, timeout_s: float = 30.0, poll_s: float = 1.0
     ) -> bool: ...
 
+    def await_true(
+        self, predicate, *, what: str, timeout_s: float = 30.0, poll_s: float = 1.0
+    ) -> bool: ...
+
 
 class PollingFillObserver:
     """Stage 6 implementation: direct polling of fills and open orders.
@@ -205,6 +209,33 @@ class PollingFillObserver:
                     f"{symbol}: position still open after {timeout_s}s awaiting flat "
                     f"(size {position.size}) — NOT treating as closed",
                     extra={"symbol": symbol, "action": "await_flat_timeout"},
+                )
+                return False
+            self._sleep(poll_s)
+
+    def await_true(
+        self, predicate, *, what: str, timeout_s: float | None = None,
+        poll_s: float | None = None,
+    ) -> bool:
+        """Poll `predicate` until it holds, or time out.
+
+        The general form of await_flat, for conditions the symbol-level
+        position cannot answer: with several trades sharing a netted position,
+        'this trade is flat' is not 'the symbol is flat'. Returns True ONLY when
+        the predicate was observed true; a timeout is False and must never be
+        treated as success (brief 27).
+        """
+        timeout_s = self.default_timeout_s if timeout_s is None else timeout_s
+        poll_s = self.default_poll_s if poll_s is None else poll_s
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if predicate():
+                return True
+            if time.monotonic() >= deadline:
+                log.error(
+                    f"{what}: not confirmed after {timeout_s}s — NOT treating "
+                    "as done",
+                    extra={"action": "await_true_timeout"},
                 )
                 return False
             self._sleep(poll_s)

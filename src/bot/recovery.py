@@ -299,6 +299,20 @@ class RecoveryManager:
         symbol = trade["symbol"]
         position = snapshot.positions.get(symbol)
         has_position = position is not None and not position.is_flat
+        if has_position:
+            # Trades share a netted position, so "the symbol holds something" no
+            # longer means THIS trade's missing order might have executed. If
+            # the live trades on the symbol (this one included) account for the
+            # exchange position EXACTLY, nothing is left over for a missing
+            # order to have produced, and it is safe to abandon. Only an
+            # unexplained remainder (more on the exchange than the ledgers hold,
+            # e.g. a fill that fell out of the bounded fills history) keeps it
+            # ambiguous. A trade alone on its symbol keeps the stricter rule.
+            sharing = self.store.active_trades_for_symbol(symbol)
+            if len(sharing) > 1 and position.size == sum(
+                (self.engine.trade_ledger(t["id"])[0] for t in sharing), Decimal(0)
+            ):
+                has_position = False
 
         for row in self.store.orders_for_trade(trade["id"]):
             status = OrderStatus(row["status"])

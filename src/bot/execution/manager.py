@@ -66,6 +66,14 @@ class StepResult:
         self.actions.append(action)
 
 
+def _trade_uid_of(client_order_id: str | None) -> str | None:
+    """'T-ab12cd34ef56-SL-1' -> 'T-ab12cd34ef56' (see engine.client_order_id)."""
+    if not client_order_id:
+        return None
+    parts = client_order_id.rsplit("-", 2)
+    return parts[0] if len(parts) == 3 else None
+
+
 class TradeManager:
     def __init__(
         self,
@@ -108,22 +116,35 @@ class TradeManager:
                       exc_info=True, extra={"action": "sweep_failed"})
             return protected
 
-        stopped = {o.symbol for o in orders if o.order_type == "stop"}
+        # Per TRADE, not per symbol: with trades sharing a netted position a
+        # symbol can have one trade's stop and another trade's naked quantity,
+        # and "the symbol has a stop" would call both protected.
+        stopped_uids = {
+            _trade_uid_of(o.client_order_id)
+            for o in orders if o.order_type == "stop" and o.client_order_id
+        }
         for position in positions:
-            if position.symbol in stopped:
-                continue
-            trade = self.store.get_active_trade_for_symbol(position.symbol)
-            if trade is None:
+            trades = self.store.active_trades_for_symbol(position.symbol)
+            if not trades:
                 continue  # orphan: never adopted, reported by reconciliation
-            if TradeState(trade["state"]).is_terminal:
-                continue
             spec = self._spec_by_symbol.get(position.symbol)
             if spec is None:
                 continue
-            if self.ensure_protected(
-                trade["id"], spec, Direction(trade["direction"]), position
-            ):
-                protected.append(position.symbol)
+            for trade in trades:
+                if TradeState(trade["state"]).is_terminal:
+                    continue
+                if trade["trade_uid"] in stopped_uids:
+                    continue
+                # This trade's own quantity (the whole position when it is the
+                # only trade on the symbol, its own fills when it is not).
+                # None = it holds nothing yet, e.g. entries still resting.
+                own = self.engine.trade_position(trade["id"])
+                if own is None:
+                    continue
+                if self.ensure_protected(
+                    trade["id"], spec, Direction(trade["direction"]), own
+                ):
+                    protected.append(position.symbol)
         return protected
 
     def step_all(self) -> list[StepResult]:
@@ -164,7 +185,7 @@ class TradeManager:
             # Quarantine suspends STRATEGY, never PROTECTION. A trade whose
             # state we cannot resolve still holds real exposure, so it keeps
             # its stop; it just gets no new TPs, breakeven or auto-close.
-            position = self.engine.observer.observe_position(symbol)
+            position = self.engine.trade_position(trade_id)
             if position and not position.is_flat:
                 if self.ensure_protected(trade_id, spec, direction, position):
                     result.protected_this_step = True
@@ -193,7 +214,7 @@ class TradeManager:
         # 5. Breakeven — authorised only by a confirmed TP2 fill (brief 15).
         state = TradeState(self.store.get_trade(trade_id)["state"])
         if state is TradeState.TP2_FILLED:
-            fresh = self.engine.observer.observe_position(symbol)
+            fresh = self.engine.trade_position(trade_id)
             if fresh and not fresh.is_flat:
                 if self.engine.move_stop_to_breakeven(
                     trade_id=trade_id, spec=spec, direction=direction,
@@ -258,9 +279,15 @@ class TradeManager:
         return True
 
     def active_stop_exists(self, trade_id: int, symbol: str) -> bool:
-        """True when a live protective stop covers this symbol."""
+        """True when a live protective stop belongs to THIS trade.
+
+        Its own stop, not any stop on the symbol: a second trade on the symbol
+        is not protected by the first trade's stop.
+        """
+        uid = self.store.get_trade(trade_id)["trade_uid"]
         return any(
             o.order_type == "stop" and o.symbol == symbol
+            and (o.client_order_id or "").startswith(f"{uid}-")
             for o in self.client.get_open_orders()
         )
 
