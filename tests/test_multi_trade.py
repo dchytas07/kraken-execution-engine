@@ -8,6 +8,7 @@ stopping out leaves the other intact and protected, and the per-trade
 quantities are checked against the net position the exchange reports.
 """
 
+import time
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -94,7 +95,7 @@ def rig(tmp_path, monkeypatch):
 
 def open_trade(rig, mid, text=None, *, fill=True):
     rig.exchange.autofill_entries = fill
-    res = rig.pipeline.handle_message(channel_id=CH, message_id=mid,
+    res = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=mid,
                                       text=text or signal())
     rig.exchange.autofill_entries = False
     assert res.accepted, res.detail
@@ -194,7 +195,7 @@ def test_a_duplicate_stop_of_the_same_trade_is_still_caught(rig):
 
 def test_a_third_trade_on_the_symbol_is_refused(rig):
     two_trades(rig)
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=3,
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=3,
                                     text=signal(stop="62300"))
     assert not r.accepted
     assert r.action == "REVIEW_ALERT"
@@ -206,7 +207,7 @@ def test_an_opposite_direction_signal_places_no_order_and_alerts(rig):
     open_trade(rig, 1)
     before = len(rig.exchange.orders)
     short = signal().replace("LONG", "SHORT").replace("62500", "65500")
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=2, text=short)
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=2, text=short)
     assert not r.accepted and r.action == "REVIEW_ALERT"
     assert len(rig.exchange.orders) == before, "an opposite order would net the long down"
     assert "other way" in rig.alerts[-1]["reason"] or "nets" in rig.alerts[-1]["reason"]
@@ -220,7 +221,7 @@ def test_total_margin_cap_stops_a_third_trade_even_when_the_symbol_cap_would_all
                   MAX_TRADES_PER_SYMBOL="3")
     open_trade(r, 1, signal(stop="62500"))
     open_trade(r, 2, signal(stop="62400"))
-    res = r.pipeline.handle_message(channel_id=CH, message_id=3,
+    res = r.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=3,
                                     text=signal(stop="62300"))
     assert not res.accepted and res.action == "REVIEW_ALERT"
     assert r.store.get_message(CH, 3)["rejection_reason"] == "TOTAL_MARGIN_LIMIT"
@@ -230,7 +231,7 @@ def test_total_margin_cap_stops_a_third_trade_even_when_the_symbol_cap_would_all
 
 def test_without_a_margin_cap_configured_nothing_opens_at_all(tmp_path, monkeypatch):
     r = build_rig(tmp_path, monkeypatch, MAX_TOTAL_OPEN_MARGIN="")
-    res = r.pipeline.handle_message(channel_id=CH, message_id=1, text=signal())
+    res = r.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=1, text=signal())
     assert not res.accepted and r.exchange.orders == {}
     assert r.store.get_message(CH, 1)["rejection_reason"] == "TOTAL_MARGIN_LIMIT"
     assert "not configured" in r.alerts[-1]["reason"]
@@ -251,6 +252,7 @@ def test_a_second_trade_that_leaves_the_first_stop_beyond_combined_liquidation_i
                         lambda token, chat, text: sent.append(text) or True)
     open_trade(rig, 1, signal(stop="59520", entries=("64000", "63500")))
     r = rig.pipeline.handle_message(
+        timestamp=time.time(),
         channel_id=CH, message_id=2,
         text=signal(stop="62000", entries=("66000", "65500"),
                     tps=("67000", "68000", "69000", "70000")))
@@ -308,7 +310,7 @@ def test_closing_one_trade_by_command_closes_only_that_trades_quantity(rig):
     a, b = two_trades(rig)
     fill_closes(rig.exchange)
     qb = qty(rig, b)
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=5,
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=5,
                                     text="Close in profit ☑️", reply_to_message_id=1)
     assert r.accepted, r.detail
     assert rig.store.get_trade(a)["state"] == TradeState.CLOSED.value
@@ -322,7 +324,7 @@ def test_close_by_symbol_closes_every_trade_on_it(rig):
     from tests.test_pipeline import fill_closes
     a, b = two_trades(rig)
     fill_closes(rig.exchange)
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=5, text="Close BTC Long")
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=5, text="Close BTC Long")
     assert r.accepted
     assert net(rig) == D(0)
     for t in (a, b):
@@ -333,7 +335,7 @@ def test_a_trades_close_order_is_reduce_only_and_sized_to_the_trade(rig):
     from tests.test_pipeline import fill_closes
     a, b = two_trades(rig)
     fill_closes(rig.exchange)
-    rig.pipeline.handle_message(channel_id=CH, message_id=5,
+    rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=5,
                                 text="Close in profit ☑️", reply_to_message_id=1)
     closes = orders_of(rig, a, OrderPurpose.CLOSE)
     assert len(closes) == 1 and D(closes[0]["quantity"]) == D("0.0046")
@@ -385,7 +387,7 @@ def test_a_tp_fill_on_one_trade_resizes_only_that_trades_stop(rig):
 def test_a_channel_stop_update_by_reply_moves_only_that_trades_stop(rig):
     a, b = two_trades(rig)
     sb = live(rig, b, "stop")[0]
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=7,
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=7,
                                     text="SL Update : 62800", reply_to_message_id=1)
     assert r.accepted and r.trade_id == a
     assert D(rig.store.get_trade(a)["stop_trigger_price"]) == D(62800)
@@ -396,7 +398,7 @@ def test_a_channel_stop_update_by_reply_moves_only_that_trades_stop(rig):
 def test_a_stop_update_naming_only_the_symbol_is_ambiguous_with_two_trades(rig):
     """'BTC SL Update : 62800' could mean either trade: never guess."""
     a, b = two_trades(rig)
-    r = rig.pipeline.handle_message(channel_id=CH, message_id=7,
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=7,
                                     text="BTC SL Update : 62800")
     assert r.action == "REVIEW_ALERT" and "2 open trades" in rig.alerts[-1]["reason"]
     assert D(rig.store.get_trade(a)["stop_trigger_price"]) == D(62500)

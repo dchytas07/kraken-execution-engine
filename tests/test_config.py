@@ -250,3 +250,13 @@ def test_enabled_gold_discloses_the_substitution_at_startup():
     banner = "\n".join(cfg(ALLOW_XAUT_FOR_GOLD="true").startup_banner())
     assert "PF_XAUTUSD" in banner
     assert "NOT spot XAU" in banner
+
+
+def test_max_signal_age_minutes_defaults_to_30_and_rejects_nonpositive():
+    base = {"TRADING_MODE": "paper"}
+    assert load_config(base, dotenv_path=None).max_signal_age_minutes == 30
+    assert load_config({**base, "MAX_SIGNAL_AGE_MINUTES": "10"},
+                       dotenv_path=None).max_signal_age_minutes == 10
+    for bad in ("0", "-5"):
+        with pytest.raises(ConfigError, match="MAX_SIGNAL_AGE_MINUTES"):
+            load_config({**base, "MAX_SIGNAL_AGE_MINUTES": bad}, dotenv_path=None)

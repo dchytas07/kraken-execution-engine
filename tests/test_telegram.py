@@ -8,7 +8,7 @@ component that ships untested.
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -492,3 +492,84 @@ def test_catch_up_exactly_at_the_cap_does_not_alert(rig, tmp_path, monkeypatch):
     run(listener.start())
     assert sent == []
     assert all(store.get_message(STORED_KEY, i) for i in range(2, 12))
+
+
+# ==========================================================================
+# Freshness gate: a NEW_SIGNAL older than MAX_SIGNAL_AGE_MINUTES (default 30)
+# by its Telegram POST time is recorded and alerted, never traded — whether
+# it arrives by catch-up after downtime or late on the live path.
+# ==========================================================================
+
+
+@pytest.fixture
+def review_alerts(monkeypatch):
+    sent = []
+    monkeypatch.setattr("bot.pipeline.send_review_alert",
+                        lambda config, **kw: sent.append(kw) or True)
+    return sent
+
+
+def _posted(message_id, minutes_ago, text=SIGNAL):
+    m = FakeMessage(message_id, text)
+    m.date = (datetime.now(UTC) - timedelta(minutes=minutes_ago)
+              if minutes_ago is not None else None)
+    return m
+
+
+def _assert_alerted_not_traded(store, exchange, review_alerts, message_id):
+    row = store.get_message(CHANNEL_ID, message_id)
+    assert row["rejection_reason"] == "SIGNAL_TOO_OLD"
+    assert exchange.orders == {}, "an old signal reached the exchange"
+    assert store.open_trades() == []
+    assert len(review_alerts) == 1 and review_alerts[0]["message_id"] == message_id
+    assert store.latest_message_version(CHANNEL_ID, message_id)["action"] == \
+        "REVIEW_ALERT"
+
+
+def test_backfilled_old_signal_is_alerted_not_traded(rig, review_alerts):
+    make, store, exchange = rig
+    exchange.mark = D(63800)                 # price still inside the entry range
+    listener, _ = make(history=[_posted(1, minutes_ago=120)])
+    run(listener.start())
+    _assert_alerted_not_traded(store, exchange, review_alerts, 1)
+
+
+def test_late_live_delivery_is_alerted_not_traded(rig, review_alerts):
+    make, store, exchange = rig
+    exchange.mark = D(63800)
+    listener, _ = make()
+    run(listener.handle_event(FakeEvent(_posted(1, minutes_ago=45))))
+    _assert_alerted_not_traded(store, exchange, review_alerts, 1)
+
+
+def test_fresh_backfilled_signal_still_trades(rig, review_alerts):
+    make, store, exchange = rig
+    exchange.mark = D(63800)
+    listener, _ = make(history=[_posted(1, minutes_ago=5)])
+    run(listener.start())
+    assert len(exchange.orders) == 2 and review_alerts == []
+
+
+def test_fresh_live_signal_still_trades(rig, review_alerts):
+    make, store, exchange = rig
+    exchange.mark = D(63800)
+    listener, _ = make()
+    run(listener.handle_event(FakeEvent(_posted(1, minutes_ago=1))))
+    assert len(exchange.orders) == 2 and review_alerts == []
+
+
+def test_signal_with_no_timestamp_is_alerted_not_traded(rig, review_alerts):
+    make, store, exchange = rig
+    exchange.mark = D(63800)
+    listener, _ = make()
+    run(listener.handle_event(FakeEvent(_posted(1, minutes_ago=None))))
+    _assert_alerted_not_traded(store, exchange, review_alerts, 1)
+    assert "fail closed" in store.get_message(CHANNEL_ID, 1)["rejection_detail"]
+
+
+def test_old_chatter_is_not_alerted(rig, review_alerts):
+    """The gate applies to signals only: old commentary stays quiet."""
+    make, store, exchange = rig
+    listener, _ = make(history=[_posted(1, minutes_ago=600, text="gm")])
+    run(listener.start())
+    assert review_alerts == [] and exchange.orders == {}

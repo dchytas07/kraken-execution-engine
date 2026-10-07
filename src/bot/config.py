@@ -117,6 +117,10 @@ class Config:
     # already open must keep running.)
     max_total_open_margin: Decimal | None
     entry_order_expiry_hours: int
+    # A NEW_SIGNAL whose Telegram post time is older than this (or unknown) is
+    # recorded and alerted, never traded: a backfill after downtime or a delayed
+    # delivery must not open a trade on a stale call.
+    max_signal_age_minutes: int
     reconciliation_interval_seconds: int
     # The daily summary goes out at this hour (0-23) in this timezone, every day,
     # instead of "24h after the last one" (which drifted from 20:13 to 16:56 over
@@ -417,6 +421,10 @@ def load_config(
     if entry_order_expiry_hours <= 0:
         raise ConfigError("ENTRY_ORDER_EXPIRY_HOURS must be > 0")
 
+    max_signal_age_minutes = _int(env, "MAX_SIGNAL_AGE_MINUTES", "30")
+    if max_signal_age_minutes <= 0:
+        raise ConfigError("MAX_SIGNAL_AGE_MINUTES must be > 0")
+
     reconciliation_interval_seconds = _int(
         env, "RECONCILIATION_INTERVAL_SECONDS", "60"
     )
@@ -477,6 +485,7 @@ def load_config(
         max_trades_per_symbol=max_trades_per_symbol,
         max_total_open_margin=max_total_open_margin,
         entry_order_expiry_hours=entry_order_expiry_hours,
+        max_signal_age_minutes=max_signal_age_minutes,
         reconciliation_interval_seconds=reconciliation_interval_seconds,
         daily_summary_hour=daily_summary_hour,
         daily_summary_tz=daily_summary_tz,

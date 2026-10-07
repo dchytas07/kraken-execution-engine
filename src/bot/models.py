@@ -360,6 +360,9 @@ class RejectionReason(StrEnum):
     UNRECOGNISED_POSITION = "UNRECOGNISED_POSITION"
     POSITION_CHECK_FAILED = "POSITION_CHECK_FAILED"
     STALE_ENTRY = "STALE_ENTRY"
+    # The signal's Telegram post time is older than MAX_SIGNAL_AGE_MINUTES, or
+    # unknown/unusable (fail closed). Alerted, never traded.
+    SIGNAL_TOO_OLD = "SIGNAL_TOO_OLD"
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
     SIZING_FAILED = "SIZING_FAILED"
     SIZE_BELOW_MINIMUM = "SIZE_BELOW_MINIMUM"

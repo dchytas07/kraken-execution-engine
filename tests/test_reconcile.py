@@ -5,6 +5,7 @@ Per the lesson from the wiring sweep, repairs are exercised through
 calling the repair helpers directly.
 """
 
+import time
 import json
 import logging
 from decimal import Decimal
@@ -809,7 +810,7 @@ def test_stale_waiting_trade_no_longer_blocks_a_new_signal(rig, tmp_path):
 
     def attempt(message_id):
         row = store.record_message(channel_id=-100, message_id=message_id, raw_text=text)
-        parsed = parse_message(channel_id=-100, message_id=message_id, text=text)
+        parsed = parse_message(timestamp=time.time(), channel_id=-100, message_id=message_id, text=text)
         store.update_message_parse(
             row, parsed_type=parsed.message_type.value,
             parsed_asset=parsed.asset.value if parsed.asset else None,

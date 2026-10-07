@@ -163,6 +163,7 @@ SAFETY_FUNCTIONS = {
     "channel_key": "catch-up resumes from the high-water mark under the STORED channel key",
     "_channel_key": "resolves the stored channel key, via Telegram for an @username",
     "_recheck_edits": "edits made while disconnected are still classified",
+    "check_signal_age": "MAX_SIGNAL_AGE_MINUTES: an old or undated signal is alerted, never traded",
     "_alert_catch_up_overflow": "more than CATCH_UP_CAP missed messages alerts instead of skipping silently",
 }
 

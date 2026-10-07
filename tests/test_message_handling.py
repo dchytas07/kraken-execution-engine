@@ -77,11 +77,13 @@ def rig(tmp_path, monkeypatch):
 
 
 def send(pipeline, mid, text, *, reply_to=None, media=None):
-    return pipeline.handle_message(channel_id=CH, message_id=mid, text=text,
+    return pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=mid, text=text,
                                    reply_to_message_id=reply_to, media=media)
 
 
-def edit(pipeline, mid, text, *, reply_to=None, media=None, timestamp=0.0):
+def edit(pipeline, mid, text, *, reply_to=None, media=None, timestamp=None):
+    if timestamp is None:
+        timestamp = time.time()
     return pipeline.handle_edit(channel_id=CH, message_id=mid, text=text,
                                 reply_to_message_id=reply_to, media=media,
                                 edit_date=datetime.now(UTC).isoformat(),
@@ -201,7 +203,7 @@ def test_goldusdt_resolves_to_gold(rig):
     """Twelve real GOLDUSDT/GOLDUSDC signals used to be silently UNKNOWN."""
     from bot.parser.parse import parse_message
     for sym in ("GOLDUSDT", "GOLDUSDC", "XAUUSDC"):
-        p = parse_message(channel_id=CH, message_id=1,
+        p = parse_message(timestamp=time.time(), channel_id=CH, message_id=1,
                           text=LONG.replace("BTCUSDT", sym))
         assert p.asset is CanonicalAsset.XAU, sym
 

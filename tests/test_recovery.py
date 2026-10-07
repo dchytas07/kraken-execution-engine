@@ -10,6 +10,7 @@ over in memory, so anything recovery gets right, it got right from durable
 state plus the exchange.
 """
 
+import time
 import json
 import logging
 from decimal import Decimal
@@ -746,7 +747,7 @@ def test_quarantined_symbol_refuses_new_signals(session):
     text = ("BTC LONG Entry: 64000 - 63500 TP1 65000 TP2 66000 TP3 67000 "
             "TP4 68000 SL 62500 10x")
     row = restarted.store.record_message(channel_id=-1, message_id=99, raw_text=text)
-    parsed = parse_message(channel_id=-1, message_id=99, text=text)
+    parsed = parse_message(timestamp=time.time(), channel_id=-1, message_id=99, text=text)
     result = admission.admit(parsed, row)
 
     assert result.refused, "a quarantined symbol accepted a new signal"

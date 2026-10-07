@@ -14,6 +14,8 @@ most absolute first.
 
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass
 
 from .config import Config
@@ -58,8 +60,10 @@ class SignalAdmission:
         symbol_for: dict[CanonicalAsset, str] | None = None,
         position_for=None,
         exposure_for=None,
+        clock=time.time,
     ) -> None:
         self.config = config
+        self.clock = clock  # injected so age tests never depend on wall time
         self.store = store
         self.kill_switch = kill_switch
         self.symbol_for = symbol_for or {}
@@ -98,6 +102,44 @@ class SignalAdmission:
             },
         )
         return AdmissionResult(False, decision, reason, detail)
+
+    # Telegram stamps the post time; a timestamp this far AHEAD of our clock
+    # is not a skew we trust, so it is treated as unusable.
+    MAX_CLOCK_SKEW_SECONDS = 300
+
+    def check_signal_age(
+        self, parsed: ParsedMessage, message_row_id: int
+    ) -> AdmissionResult | None:
+        """Refuse (REQUIRES_REVIEW, so a human is alerted) a signal posted
+        more than MAX_SIGNAL_AGE_MINUTES ago. FAILS CLOSED: a missing, zero,
+        non-finite or future timestamp refuses too."""
+        limit_min = self.config.max_signal_age_minutes
+        posted = getattr(parsed, "timestamp", None)
+        now = self.clock()
+        try:
+            posted = float(posted)
+        except (TypeError, ValueError):
+            posted = math.nan
+        if not math.isfinite(posted) or posted <= 0 or (
+            posted - now > self.MAX_CLOCK_SKEW_SECONDS
+        ):
+            return self._refuse(
+                message_row_id,
+                RejectionReason.SIGNAL_TOO_OLD,
+                f"signal post time unknown or unusable ({parsed.timestamp!r}); "
+                "not traded (fail closed)",
+                decision=ExecutionDecision.REQUIRES_REVIEW,
+            )
+        age_min = (now - posted) / 60
+        if age_min > limit_min:
+            return self._refuse(
+                message_row_id,
+                RejectionReason.SIGNAL_TOO_OLD,
+                f"signal posted {age_min:.0f} min ago, older than "
+                f"MAX_SIGNAL_AGE_MINUTES={limit_min}; not traded",
+                decision=ExecutionDecision.REQUIRES_REVIEW,
+            )
+        return None
 
     def check_exchange_position(
         self, symbol: str, message_row_id: int
@@ -310,6 +352,15 @@ class SignalAdmission:
                 RejectionReason.UNSUPPORTED_INSTRUMENT,
                 f"{parsed.asset.value} is not in the tradeable set",
             )
+
+        # 5b. Signal age, by its Telegram POST time (not arrival time). A
+        #     signal replayed after downtime, or delivered late, is a stale
+        #     call even if price happens to sit in its entry range. Alerted,
+        #     never traded; an unknown post time refuses too (fail closed).
+        if opens_exposure:
+            refusal = self.check_signal_age(parsed, message_row_id)
+            if refusal is not None:
+                return refusal
 
         # 6. Duplicate detection (brief 23), layer 2: content fingerprint.
         #    Only a new signal can be a duplicate SIGNAL; a repeated close is

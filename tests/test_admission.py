@@ -8,6 +8,7 @@ isolation and simply never called.
 
 from decimal import Decimal
 
+import time
 import pytest
 
 from bot.admission import SignalAdmission
@@ -72,6 +73,7 @@ def ingest(store, text, message_id=1, reply_to=None):
         reply_to_message_id=reply_to,
     )
     parsed = parse_message(
+        timestamp=time.time(),
         channel_id=-100, message_id=message_id, text=text,
         reply_to_message_id=reply_to,
     )
@@ -531,3 +533,57 @@ def test_production_factory_always_wires_the_position_check():
     from bot.pipeline import build_admission
     source = inspect.getsource(build_admission)
     assert "position_for=client.get_position" in source
+
+
+# ==========================================================================
+# Signal age (MAX_SIGNAL_AGE_MINUTES): by Telegram post time, fail closed
+# ==========================================================================
+
+NOW = 1_800_000_000.0
+BTC_SIGNAL = """BTC LONG
+Entry: 64000 - 63500
+TP1: 65000
+TP2: 66000
+SL: 62500
+Leverage: 10x
+"""
+
+
+def _aged(gate, *, posted):
+    admission, store, _, _ = gate
+    admission.clock = lambda: NOW
+    row = store.record_message(channel_id=-100, message_id=1, raw_text=BTC_SIGNAL)
+    parsed = parse_message(channel_id=-100, message_id=1, text=BTC_SIGNAL,
+                           timestamp=posted)
+    return admission.admit(parsed, row), store
+
+
+def test_signal_age_limit_defaults_to_30_minutes(gate):
+    assert gate[0].config.max_signal_age_minutes == 30
+
+
+@pytest.mark.parametrize("age_min", [0, 5, 29.9])
+def test_a_fresh_signal_is_admitted(gate, age_min):
+    result, _ = _aged(gate, posted=NOW - age_min * 60)
+    assert result.admitted
+
+
+@pytest.mark.parametrize("age_min", [30.1, 45, 24 * 60])
+def test_an_old_signal_is_refused_for_review(gate, age_min):
+    result, store = _aged(gate, posted=NOW - age_min * 60)
+    assert result.refused and result.reason is RejectionReason.SIGNAL_TOO_OLD
+    # REQUIRES_REVIEW is what makes the pipeline alert a human.
+    assert store.get_message(-100, 1)["execution_decision"] == "REQUIRES_REVIEW"
+
+
+@pytest.mark.parametrize("posted", [0.0, None, float("nan"), float("inf"),
+                                    "garbage", NOW + 3600])
+def test_an_undated_or_unusable_timestamp_fails_closed(gate, posted):
+    result, store = _aged(gate, posted=posted)
+    assert result.refused and result.reason is RejectionReason.SIGNAL_TOO_OLD
+    assert "fail closed" in result.detail
+
+
+def test_small_clock_skew_ahead_is_tolerated(gate):
+    result, _ = _aged(gate, posted=NOW + 60)
+    assert result.admitted
