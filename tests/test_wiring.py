@@ -114,6 +114,12 @@ SAFETY_FUNCTIONS = {
     # Dead-man's-switch: a heartbeat nothing sends is a monitor that never
     # fires on a healthy bot and tells you nothing on a dead one.
     "send_heartbeat": "external dead-man's-switch ping from the run loop",
+    # 2026-10-06: expiry sat after an early return, so flat WAITING_FOR_ENTRY
+    # trades never had overdue entries cancelled and a filled-and-stopped trade
+    # was never closed. Each helper is registered so none can lose its caller.
+    "_expire_stale_entries": "brief 12 — overdue entries cancelled even with no position",
+    "_recover_unrecorded_entries": "fills that came and went between observations are recorded",
+    "_cancel_dead_unentered_trade": "a trade whose entries all expired unfilled is released",
     "loop_is_healthy": "heartbeat gate: pings only while sweep and reconcile are fresh",
 }
 

@@ -745,3 +745,150 @@ def test_guarded_trade_drift_still_refused_when_margin_thin(rig):
     assert drift.repaired is False
     assert calls == [] and exchange.leverage["PF_XBTUSD"] == D(10)
 
+
+
+# ==========================================================================
+# Expiry must reach trades that hold NO position (2026-10-06 incident)
+# ==========================================================================
+
+OVERDUE = "2000-01-01T00:00:00+00:00"
+
+
+def _open_resting(engine, trade_id, uid):
+    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
+                               entry_prices=ENTRIES, signal_leverage=D(10), stop_loss=STOP)
+    return plan, engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
+
+
+def _make_overdue(store):
+    with store.transaction() as conn:
+        conn.execute("UPDATE orders SET expires_at = ? WHERE purpose = 'ENTRY'",
+                     (OVERDUE,))
+
+
+def test_overdue_entries_of_a_flat_trade_are_cancelled(rig):
+    """REGRESSION: expiry ran after `if position is None: return`, so a trade
+    still WAITING_FOR_ENTRY never had its overdue entries cancelled."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    _open_resting(engine, trade_id, uid)
+    _make_overdue(store)
+    assert exchange.get_position("PF_XBTUSD") is None
+
+    report = rec.run_once()
+
+    assert DiscrepancyKind.STALE_ENTRY_ORDER in kinds(report)
+    assert exchange.get_open_orders() == []
+    statuses = {r["status"] for r in store.orders_for_trade(trade_id, OrderPurpose.ENTRY)}
+    assert statuses == {OrderStatus.EXPIRED.value}
+
+
+def test_flat_trade_with_every_entry_expired_is_cancelled_and_frees_the_symbol(rig, tmp_path):
+    engine, exchange, store, rec, trade_id, uid = rig
+    _open_resting(engine, trade_id, uid)
+    assert store.get_active_trade_for_symbol("PF_XBTUSD") is not None
+    _make_overdue(store)
+
+    rec.run_once()
+
+    assert store.get_trade(trade_id)["state"] == TradeState.CANCELLED.value
+    assert store.get_active_trade_for_symbol("PF_XBTUSD") is None
+
+
+def test_stale_waiting_trade_no_longer_blocks_a_new_signal(rig, tmp_path):
+    """End to end through the real admission gate."""
+    from bot.admission import SignalAdmission
+    from bot.models import RejectionReason
+    from bot.parser.parse import fingerprint_for, parse_message
+
+    engine, exchange, store, rec, trade_id, uid = rig
+    _open_resting(engine, trade_id, uid)
+    gate = SignalAdmission(
+        config=engine.config, store=store,
+        kill_switch=KillSwitch(path=tmp_path / "KILL"),
+        symbol_for={CanonicalAsset.BTC: "PF_XBTUSD"}, position_for=lambda s: None,
+    )
+    text = ("🟢 BTC LONG\nEntry: 64000 - 63500\nTP1: 65000\nTP2: 66000\n"
+            "TP3: 67000\nTP4: 68000\nSL: 62500\nLeverage: 10x")
+
+    def attempt(message_id):
+        row = store.record_message(channel_id=-100, message_id=message_id, raw_text=text)
+        parsed = parse_message(channel_id=-100, message_id=message_id, text=text)
+        store.update_message_parse(
+            row, parsed_type=parsed.message_type.value,
+            parsed_asset=parsed.asset.value if parsed.asset else None,
+            signal_fingerprint=f"fp-{message_id}",
+        )
+        return gate.admit(parsed, row)
+
+    blocked = attempt(50)
+    assert blocked.refused and blocked.reason is RejectionReason.SYMBOL_ALREADY_ACTIVE
+
+    _make_overdue(store)
+    rec.run_once()
+
+    assert attempt(51).admitted
+
+
+def test_unexpired_flat_trade_keeps_waiting(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    _open_resting(engine, trade_id, uid)
+    rec.run_once()
+    assert store.get_trade(trade_id)["state"] == TradeState.WAITING_FOR_ENTRY.value
+    assert len(exchange.get_open_orders()) == 2
+
+
+def test_flat_trade_with_an_unknown_entry_is_not_cancelled(rig):
+    """UNKNOWN means 'could not tell'; it must never be read as 'dead'."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    _open_resting(engine, trade_id, uid)
+    rows = store.orders_for_trade(trade_id, OrderPurpose.ENTRY)
+    for r in rows:
+        store.update_order(r["id"], status=OrderStatus.UNKNOWN)
+    exchange.orders.clear()
+    rec.run_once()
+    assert store.get_trade(trade_id)["state"] == TradeState.WAITING_FOR_ENTRY.value
+
+
+def test_entries_that_filled_and_stopped_out_between_observations_are_recorded(rig):
+    """REGRESSION (trade 10): both entries filled, the sweep placed a stop and
+    it triggered, all before the trade's own sync ran. The trade stayed
+    WAITING_FOR_ENTRY with quantity 0 and the loss was never recorded."""
+    engine, exchange, store, rec, trade_id, uid = rig
+    plan, coids = _open_resting(engine, trade_id, uid)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    exchange.fill(coids[1], plan.entries[1][1], D(63500))
+    # The protection sweep places the stop from the exchange position...
+    protect(engine, exchange, trade_id, uid)
+    stop = store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)[0]
+    # ...and it triggers before sync_entry_fills ever records a quantity.
+    exchange.fill(stop["client_order_id"], D(stop["quantity"]), D(62500))
+    assert exchange.get_position("PF_XBTUSD") is None
+    assert D(store.get_trade(trade_id)["actual_quantity"]) == 0
+
+    report = rec.run_once()
+
+    t = store.get_trade(trade_id)
+    total = plan.entries[0][1] + plan.entries[1][1]
+    avg = (plan.entries[0][1] * D(64000) + plan.entries[1][1] * D(63500)) / total
+    assert t["state"] == TradeState.CLOSED.value
+    assert D(t["actual_quantity"]) == total
+    expected = ((D(62500) - avg) * total).quantize(D("0.01"))
+    assert expected < 0
+    assert D(t["realized_pnl"]) == expected
+    assert DiscrepancyKind.FILL_NOT_RECORDED in kinds(report)
+    assert DiscrepancyKind.POSITION_GONE in kinds(report)
+    assert store.get_active_trade_for_symbol("PF_XBTUSD") is None
+
+
+def test_ghost_recovery_is_idempotent(rig):
+    engine, exchange, store, rec, trade_id, uid = rig
+    plan, coids = _open_resting(engine, trade_id, uid)
+    exchange.fill(coids[0], plan.entries[0][1], D(64000))
+    protect(engine, exchange, trade_id, uid)
+    stop = store.orders_for_trade(trade_id, OrderPurpose.STOP_LOSS)[0]
+    exchange.fill(stop["client_order_id"], D(stop["quantity"]), D(62500))
+    rec.run_once()
+    pnl = store.get_trade(trade_id)["realized_pnl"]
+    rec.run_once()
+    assert store.get_trade(trade_id)["realized_pnl"] == pnl
+    assert store.get_trade(trade_id)["state"] == TradeState.CLOSED.value

@@ -290,6 +290,18 @@ class Reconciler:
         # 1. Fills the local DB has not caught up with.
         self._sync_order_states(trade_id, snapshot, report)
 
+        # 1b. Stale entry orders (brief 12). Deliberately BEFORE every early
+        #     return below. This used to be the last step, which only a trade
+        #     holding a position ever reached: a trade still WAITING_FOR_ENTRY
+        #     has no position, so its overdue entries were never cancelled
+        #     (2026-10-06: two XAU entries rested for 29 days; two BTC entries
+        #     filled three days past expiry and lost $13.81 unrecorded).
+        self._expire_stale_entries(trade_id, symbol, report)
+
+        # 1c. Entries that filled and left again between two observations.
+        self._recover_unrecorded_entries(trade, position, report)
+        trade = self.store.get_trade(trade_id)
+
         # 2. Exchange says flat but the trade is not finished.
         #
         #    Data-driven, not state-driven. This used `state.is_open`, an
@@ -310,6 +322,10 @@ class Reconciler:
             return
 
         if position is None:
+            # Nothing was ever held and every entry order is dead: the signal
+            # is over. Terminal, so it stops occupying the symbol (admission
+            # refuses a new signal on a symbol with a non-terminal trade).
+            self._cancel_dead_unentered_trade(trade, report)
             return
 
         # 3. Advance the entry lifecycle label to match reality.
@@ -381,7 +397,8 @@ class Reconciler:
                 )
             )
 
-        # 7. Stale entry orders (brief 12).
+
+    def _expire_stale_entries(self, trade_id, symbol, report) -> None:
         expired = self.engine.expire_stale_entries(
             trade_id, datetime.now(UTC).isoformat()
         )
@@ -389,11 +406,83 @@ class Reconciler:
             report.discrepancies.append(
                 Discrepancy(
                     DiscrepancyKind.STALE_ENTRY_ORDER,
-                    f"{expired} entry order(s) past their {self.config.entry_order_expiry_hours}h lifetime",
+                    f"{expired} entry order(s) past their "
+                    f"{self.config.entry_order_expiry_hours}h lifetime",
                     trade_id, symbol, repaired=True,
                     repair_detail="cancelled",
                 )
             )
+
+    def _recover_unrecorded_entries(self, trade, position, report) -> None:
+        """Record entry fills for a trade that never saw its own position.
+
+        `sync_entry_fills` only writes a quantity while a position exists. An
+        entry that fills and is stopped out inside one observation gap leaves
+        the trade at actual_quantity 0, so `had_exposure` is False and the
+        trade is never closed (trade 10: filled and stopped out within 20s,
+        P&L never recorded). The entry order rows are already synced from fill
+        history by step 1, so the quantity is recovered from them.
+        """
+        state = TradeState(trade["state"])
+        if (position is not None or state.is_terminal
+                or Decimal(trade["actual_quantity"]) > 0):
+            return
+        total = Decimal(0)
+        notional = Decimal(0)
+        for row in self.store.orders_for_trade(trade["id"], OrderPurpose.ENTRY):
+            filled = Decimal(row["filled_quantity"] or 0)
+            if filled > 0 and row["avg_fill_price"]:
+                total += filled
+                notional += filled * Decimal(row["avg_fill_price"])
+        if total <= 0:
+            return
+        avg = notional / total
+        self.store.update_trade_actuals(
+            trade["id"], actual_quantity=total, actual_avg_entry_price=avg
+        )
+        report.discrepancies.append(
+            Discrepancy(
+                DiscrepancyKind.FILL_NOT_RECORDED,
+                f"entries filled {total} @ {avg:.2f} but the trade recorded "
+                "no quantity and the position is already flat",
+                trade["id"], trade["symbol"], repaired=True,
+                repair_detail="quantity and entry price recovered from fills",
+            )
+        )
+
+    def _cancel_dead_unentered_trade(self, trade, report) -> None:
+        """WAITING_FOR_ENTRY, no exposure, every entry order definitely dead."""
+        trade = self.store.get_trade(trade["id"])
+        if (TradeState(trade["state"]) is not TradeState.WAITING_FOR_ENTRY
+                or Decimal(trade["actual_quantity"]) > 0):
+            return
+        entries = self.store.orders_for_trade(trade["id"], OrderPurpose.ENTRY)
+        dead = {OrderStatus.CANCELLED.value, OrderStatus.EXPIRED.value,
+                OrderStatus.REJECTED.value}
+        # UNKNOWN is not dead: it is "could not tell", and stays unresolved.
+        if not entries or any(
+            r["status"] not in dead or Decimal(r["filled_quantity"] or 0) > 0
+            for r in entries
+        ):
+            return
+        self.store.transition_trade(
+            trade["id"], TradeState.CANCELLED,
+            "all entry orders expired or were cancelled unfilled",
+        )
+        log.warning(
+            f"trade {trade['id']} {trade['symbol']} cancelled: no entry filled "
+            "and every entry order is gone",
+            extra={"trade_id": trade["id"], "symbol": trade["symbol"],
+                   "action": "entry_expired_cancelled"},
+        )
+        report.discrepancies.append(
+            Discrepancy(
+                DiscrepancyKind.STALE_ENTRY_ORDER,
+                "trade never entered; all entry orders expired",
+                trade["id"], trade["symbol"], repaired=True,
+                repair_detail="trade cancelled, symbol released",
+            )
+        )
 
     def _sync_order_states(self, trade_id, snapshot, report) -> None:
         """Bring local order rows in line with the snapshot."""
