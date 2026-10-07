@@ -46,6 +46,13 @@ from .models import CanonicalAsset, TradingMode
 #
 # Re-pinning is a one-line change back to True.
 # ---------------------------------------------------------------------------
+# Every trade runs at exactly this leverage: not the signal's (they ask for 5x
+# to 75x), not "whatever the stop allows". A far stop is REFUSED
+# (STOP_BEYOND_LIQUIDATION), never answered by quietly lowering leverage, so the
+# account's leverage is a constant the operator can reason about and the
+# reconciler can re-assert without a per-trade lookup.
+FIXED_LEVERAGE = Decimal(10)
+
 V1_GOLD_PIN_ACTIVE = False
 
 # Gold trades against a proxy whose basis to spot gold was measured at -1.85%
@@ -92,13 +99,11 @@ class Config:
     trading_mode: TradingMode
     trade_margin_usd: Decimal
     max_leverage: Decimal
-    default_leverage: Decimal
     max_entry_deviation_percent: Decimal
     max_sizing_deviation_percent: Decimal
-    # Stop-vs-liquidation guard: leverage is lowered (never below this floor)
-    # until the stop triggers at least this many points before the estimated
-    # liquidation price; past the floor the signal is refused.
-    min_leverage: Decimal
+    # Stop-vs-liquidation guard: at the fixed leverage the stop must trigger at
+    # least this many percentage points before the estimated liquidation price
+    # (2% maintenance); otherwise the signal is refused, never re-levered.
     stop_liquidation_buffer_percent: Decimal
     entry_order_expiry_hours: int
     reconciliation_interval_seconds: int
@@ -131,6 +136,11 @@ class Config:
     # ---- derived helpers -------------------------------------------------
 
     @property
+    def fixed_leverage(self) -> Decimal:
+        """The leverage every trade runs at (see FIXED_LEVERAGE)."""
+        return FIXED_LEVERAGE
+
+    @property
     def entry_allocation_usd(self) -> Decimal:
         """Margin per entry order — two entries, 50/50 (brief 11)."""
         return self.trade_margin_usd / Decimal(2)
@@ -142,8 +152,8 @@ class Config:
         """Lines emitted at every startup. Mode is always visible (brief 26)."""
         lines = [
             f"TRADING MODE: {self.trading_mode.value.upper()}",
-            f"margin=${self.trade_margin_usd} max_leverage={self.max_leverage}x "
-            f"default_leverage={self.default_leverage}x",
+            f"margin=${self.trade_margin_usd} leverage={FIXED_LEVERAGE}x fixed "
+            f"(cap {self.max_leverage}x)",
             f"tradeable: {', '.join(sorted(a.value for a in self.tradeable_assets))}",
             f"kill_switch={self.kill_switch_path} db={self.db_path}",
         ]
@@ -306,12 +316,10 @@ def load_config(
             "(brief 9). This limit is not configurable upward."
         )
 
-    default_leverage = _positive(
-        "DEFAULT_LEVERAGE", _decimal(env, "DEFAULT_LEVERAGE", "10")
-    )
-    if default_leverage > max_leverage:
+    if max_leverage < FIXED_LEVERAGE:
         raise ConfigError(
-            f"DEFAULT_LEVERAGE={default_leverage} exceeds MAX_LEVERAGE={max_leverage}"
+            f"MAX_LEVERAGE={max_leverage} is below the fixed {FIXED_LEVERAGE}x "
+            "every trade runs at; the cap would refuse every signal"
         )
 
     max_entry_deviation_percent = _positive(
@@ -323,11 +331,6 @@ def load_config(
         _decimal(env, "MAX_SIZING_DEVIATION_PERCENT", "5.0"),
     )
 
-    min_leverage = _positive("MIN_LEVERAGE", _decimal(env, "MIN_LEVERAGE", "5"))
-    if min_leverage > max_leverage:
-        raise ConfigError(
-            f"MIN_LEVERAGE={min_leverage} exceeds MAX_LEVERAGE={max_leverage}"
-        )
     stop_liquidation_buffer_percent = _decimal(env, "STOP_LIQ_BUFFER_PCT", "1.0")
     if stop_liquidation_buffer_percent < 0:
         raise ConfigError(
@@ -392,10 +395,8 @@ def load_config(
         trading_mode=trading_mode,
         trade_margin_usd=trade_margin_usd,
         max_leverage=max_leverage,
-        default_leverage=default_leverage,
         max_entry_deviation_percent=max_entry_deviation_percent,
         max_sizing_deviation_percent=max_sizing_deviation_percent,
-        min_leverage=min_leverage,
         stop_liquidation_buffer_percent=stop_liquidation_buffer_percent,
         entry_order_expiry_hours=entry_order_expiry_hours,
         reconciliation_interval_seconds=reconciliation_interval_seconds,

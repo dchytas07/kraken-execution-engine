@@ -105,10 +105,10 @@ SAFETY_FUNCTIONS = {
     # 10x before its stop could trigger). Registered at every layer so the
     # guard cannot lose its caller while a sibling keeps one.
     "max_leverage_for_stop": "stop must trigger before estimated liquidation",
-    "_leverage_for_stop": "plan_entries lowers leverage or refuses STOP_BEYOND_LIQUIDATION",
+    "_require_stop_inside_liquidation": "plan_entries refuses STOP_BEYOND_LIQUIDATION; leverage is fixed, never lowered",
     "check_stop_inside_liquidation": "open_trade re-check of the plan's stop vs liquidation",
     "set_intent_leverage": "records the leverage actually opened at",
-    "expected_leverage": "leverage drift/reassert compares against the trade's leverage, not the cap",
+    "expected_leverage": "leverage drift/reassert compares against the fixed 10x, not a per-trade value",
     # Host suspend (2026-10-04: 12h WSL suspend left a position unwatched).
     "detect_suspend": "frozen-loop detection: alert, then protect and reconcile at once",
     # Dead-man's-switch: a heartbeat nothing sends is a monitor that never

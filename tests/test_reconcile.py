@@ -673,25 +673,17 @@ def test_orphan_size_change_relogs_immediately(rig, caplog):
 
 
 # ==========================================================================
-# Leverage of a guard-lowered trade (stop vs liquidation). KRAKEN_NOTES 1C:
-# set-leverage re-margins an open position, so it must never be called when
-# the account already holds the trade's leverage.
+# Fixed leverage and the account. KRAKEN_NOTES 1C: set-leverage re-margins an
+# open position, so it must never be called when the account already holds the
+# expected (fixed, 10x) leverage -- and a differing value is corrected to 10x,
+# not "respected" as some per-trade figure.
 # ==========================================================================
 
-WIDE_STOP = D(58240)  # 9% below 64000 -> the guard opens at 8x
 
-
-def open_at_8x(engine, exchange, trade_id, uid):
-    plan = engine.plan_entries(spec=BTC, direction=Direction.LONG,
-                               entry_prices=ENTRIES, signal_leverage=D(10),
-                               stop_loss=WIDE_STOP)
-    assert plan.leverage == D(8)
-    coids = engine.open_trade(trade_id=trade_id, trade_uid=uid, spec=BTC, plan=plan)
-    exchange.fill(coids[0], plan.entries[0][1], D(64000))
-    engine.sync_entry_fills(trade_id)
-    engine.place_stop(trade_id=trade_id, trade_uid=uid, spec=BTC,
-                      direction=Direction.LONG, trigger_price=WIDE_STOP,
-                      position=exchange.get_position("PF_XBTUSD"))
+def open_at_fixed(engine, exchange, trade_id, uid):
+    plan, _ = open_and_fill(engine, exchange, trade_id, uid, both=False)
+    assert plan.leverage == D(10)
+    protect(engine, exchange, trade_id, uid)
 
 
 def count_set_leverage(exchange):
@@ -706,35 +698,35 @@ def count_set_leverage(exchange):
     return calls
 
 
-def test_open_position_at_trade_leverage_is_never_re_margined(rig):
+def test_open_position_at_the_fixed_leverage_is_never_re_margined(rig):
     engine, exchange, store, rec, trade_id, uid = rig
-    open_at_8x(engine, exchange, trade_id, uid)
+    open_at_fixed(engine, exchange, trade_id, uid)
     assert exchange.get_position("PF_XBTUSD") is not None
     calls = count_set_leverage(exchange)
 
     report = rec.run_once()
 
     assert DiscrepancyKind.LEVERAGE_DRIFT not in kinds(report)
-    assert calls == [], "set-leverage on an open position already at intent"
-    assert exchange.leverage["PF_XBTUSD"] == D(8)
+    assert calls == [], "set-leverage on an open position already at 10x"
+    assert exchange.leverage["PF_XBTUSD"] == D(10)
 
 
-def test_drift_on_a_guarded_trade_reasserts_its_leverage_not_the_cap(rig):
+def test_drift_is_reasserted_to_the_fixed_ten_not_to_a_per_trade_value(rig):
     engine, exchange, store, rec, trade_id, uid = rig
-    open_at_8x(engine, exchange, trade_id, uid)
-    exchange.leverage["PF_XBTUSD"] = D(10)
+    open_at_fixed(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(8)
     exchange.available = D(500)
 
     report = rec.run_once()
 
     assert DiscrepancyKind.LEVERAGE_DRIFT in kinds(report)
-    assert exchange.leverage["PF_XBTUSD"] == D(8)
+    assert exchange.leverage["PF_XBTUSD"] == D(10)
 
 
-def test_guarded_trade_drift_still_refused_when_margin_thin(rig):
+def test_drift_is_still_refused_when_margin_is_thin(rig):
     engine, exchange, store, rec, trade_id, uid = rig
-    open_at_8x(engine, exchange, trade_id, uid)
-    exchange.leverage["PF_XBTUSD"] = D(10)
+    open_at_fixed(engine, exchange, trade_id, uid)
+    exchange.leverage["PF_XBTUSD"] = D(8)
     exchange.available = D(10)  # below TRADE_MARGIN_USD=30
     calls = count_set_leverage(exchange)
 
@@ -743,8 +735,7 @@ def test_guarded_trade_drift_still_refused_when_margin_thin(rig):
     drift = next(d for d in report.discrepancies
                  if d.kind is DiscrepancyKind.LEVERAGE_DRIFT)
     assert drift.repaired is False
-    assert calls == [] and exchange.leverage["PF_XBTUSD"] == D(10)
-
+    assert calls == [] and exchange.leverage["PF_XBTUSD"] == D(8)
 
 
 # ==========================================================================

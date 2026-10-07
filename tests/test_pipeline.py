@@ -281,12 +281,26 @@ def test_stop_beyond_liquidation_refused_through_the_pipeline(pipe, monkeypatch)
     assert any(t.startswith("REFUSED PF_XBTUSD LONG") for t in sent)
 
 
-def test_wide_stop_opens_at_lowered_leverage_through_the_pipeline(pipe):
-    """SL 58240 is 9% below 64000: the 50x signal opens at 8x, not 10x."""
+def test_wide_stop_is_refused_not_opened_at_lower_leverage_through_the_pipeline(pipe, monkeypatch):
+    """SL 58240 is 9% below 64000, beyond the 7% a fixed 10x allows. It used to
+    open at 8x; now it is refused, with the reason recorded, nothing placed."""
     pipeline, store, exchange, _ = pipe
+    sent = []
+    monkeypatch.setattr("bot.execution.engine.send_alert",
+                        lambda token, chat, text: sent.append(text) or True)
     result = pipeline.handle_message(
         channel_id=-100, message_id=1, text=SIGNAL.replace("SL: 62500", "SL: 58240"))
-    assert result.accepted
-    assert exchange.leverage["PF_XBTUSD"] == D(8)
-    assert store.get_trade(result.trade_id)["intent_leverage"] == "8"
+    assert not result.accepted
+    assert exchange.orders == {} and "PF_XBTUSD" not in exchange.leverage
+    row = store.get_message(-100, 1)
+    assert row["rejection_reason"] == "STOP_BEYOND_LIQUIDATION"
+    assert any("fixed 10x" in t for t in sent)
 
+
+def test_signal_leverage_never_changes_the_leverage_through_the_pipeline(pipe):
+    """The channel asks for 5x-75x; the account always gets 10x."""
+    pipeline, store, exchange, _ = pipe
+    result = pipeline.handle_message(
+        channel_id=-100, message_id=1, text=SIGNAL.replace("Leverage: 50x", "Leverage: 5x"))
+    assert result.accepted
+    assert exchange.leverage["PF_XBTUSD"] == D(10)

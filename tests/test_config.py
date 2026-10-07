@@ -72,13 +72,22 @@ def test_max_leverage_cannot_exceed_hard_cap():
         cfg(MAX_LEVERAGE="20")
 
 
-def test_max_leverage_may_be_lowered():
-    assert cfg(MAX_LEVERAGE="5", DEFAULT_LEVERAGE="5").max_leverage == Decimal("5")
+def test_leverage_is_fixed_at_ten():
+    assert cfg().fixed_leverage == Decimal(10)
 
 
-def test_default_leverage_cannot_exceed_max():
-    with pytest.raises(ConfigError, match="exceeds MAX_LEVERAGE"):
-        cfg(MAX_LEVERAGE="5", DEFAULT_LEVERAGE="10")
+def test_max_leverage_below_the_fixed_leverage_is_fatal():
+    """The cap would refuse every signal; better to refuse to start."""
+    with pytest.raises(ConfigError, match="below the fixed 10x"):
+        cfg(MAX_LEVERAGE="5")
+
+
+def test_retired_leverage_knobs_are_ignored_not_honoured():
+    """DEFAULT_LEVERAGE / MIN_LEVERAGE existed before leverage was fixed. A .env
+    that still sets them must not change anything (or crash)."""
+    c = cfg(DEFAULT_LEVERAGE="3", MIN_LEVERAGE="2")
+    assert c.fixed_leverage == Decimal(10)
+    assert not hasattr(c, "default_leverage") and not hasattr(c, "min_leverage")
 
 
 # -- numeric validation ----------------------------------------------------

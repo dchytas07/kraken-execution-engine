@@ -783,17 +783,16 @@ def test_a_genuinely_global_problem_does_block_everything(session):
         session.engine.require_recovered()
 
 
-def test_recovery_leaves_an_open_position_at_its_trade_leverage_alone(session):
-    """KRAKEN_NOTES 1C: set-leverage re-margins an open position. A trade the
-    stop guard opened at 8x must not be touched — let alone pushed to 10x —
-    when the account already holds 8x."""
+def test_recovery_leaves_an_open_position_at_the_fixed_leverage_alone(session):
+    """KRAKEN_NOTES 1C: set-leverage re-margins an open position. An account
+    already at the fixed 10x must not be touched on restart."""
     trade_id, uid = new_trade(session)
     session.engine.mark_recovery_complete()
     plan = session.engine.plan_entries(
         spec=BTC, direction=Direction.LONG, entry_prices=ENTRIES,
-        signal_leverage=D(10), stop_loss=D(58240),  # 9% -> 8x
+        signal_leverage=D(10), stop_loss=STOP,
     )
-    assert plan.leverage == D(8)
+    assert plan.leverage == D(10)
     coids = session.engine.open_trade(trade_id=trade_id, trade_uid=uid,
                                       spec=BTC, plan=plan)
     session.exchange.fill(coids[0], plan.entries[0][1], D(64000))
@@ -807,6 +806,5 @@ def test_recovery_leaves_an_open_position_at_its_trade_leverage_alone(session):
     restarted.recovery.recover()
 
     assert calls == []
-    assert restarted.exchange.leverage["PF_XBTUSD"] == D(8)
+    assert restarted.exchange.leverage["PF_XBTUSD"] == D(10)
     restarted.store.close()
-

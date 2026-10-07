@@ -74,15 +74,15 @@ def show_sizing(config, parsed, adapter) -> None:
         specs = adapter.load_specs()
         spec = specs[parsed.asset]
         leverage = effective_leverage(
-            parsed.leverage,
+            config.fixed_leverage,
             max_leverage=config.max_leverage,
-            default_leverage=config.default_leverage,
+            default_leverage=config.fixed_leverage,
             exchange_max_leverage=spec.max_leverage,
         )
         mark = adapter.get_mark_price(spec.symbol)
         print(f"\nInstrument {spec.symbol} (mark {mark})")
-        print(f"  Requested lev : {parsed.leverage or '— (default)'}")
-        print(f"  Effective lev : {leverage}x")
+        print(f"  Signal lev    : {parsed.leverage or '—'} (ignored)")
+        print(f"  Fixed lev     : {leverage}x")
         print(f"  Margin        : ${config.trade_margin_usd}")
         print(f"  Notional      : ${config.trade_margin_usd * leverage}")
 

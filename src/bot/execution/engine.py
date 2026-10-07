@@ -198,34 +198,42 @@ class ExecutionEngine:
         │   test_order_requests_are_only_built_inside_the_engine           │
         └──────────────────────────────────────────────────────────────────┘
 
-        Takes the SIGNAL's requested leverage and caps it here. The parameter is
-        deliberately named `signal_leverage` rather than `leverage`: the previous
-        signature accepted an already-final value, and no caller applied the cap,
-        so a 50x signal would have reached the exchange as 50x. The cap now lives
-        on the only path that can build a plan, and cannot be bypassed by a
-        caller passing a bigger number.
+        Leverage is FIXED (config.fixed_leverage, 10x): the signal's own number
+        is recorded in the log and otherwise ignored. It is never lowered here.
+        If the stop sits beyond estimated liquidation at that leverage (2%
+        maintenance, plus the STOP_LIQ_BUFFER_PCT margin) the signal is refused
+        as STOP_BEYOND_LIQUIDATION and skipped (trade 8, 2026-10-04: ETH short
+        2497, stop 2700, liquidated at 10x before the stop could fire).
 
-        The stop must trigger before liquidation, so leverage is lowered here
-        when the stop is too far away (trade 8: ETH short 2497, stop 2700,
-        liquidated at 10x before the stop could fire) — never raised, never
-        below MIN_LEVERAGE, otherwise refused as STOP_BEYOND_LIQUIDATION.
+        `signal_leverage` keeps its name for the reason it was named: callers
+        hand over what the SIGNAL asked for, and the cap and the fixed value are
+        applied on the only path that builds a plan, so a caller cannot bypass
+        them by passing a bigger number.
         """
         if not entry_prices:
             raise ExecutionRefused("NO_ENTRY_PRICES")
         is_short = direction is Direction.SHORT
 
-        # brief 9: min(signal, internal cap, exchange max)
+        # brief 9: the internal cap and the exchange maximum still bind. With a
+        # FIXED leverage they can only refuse, never lower: a quietly reduced
+        # leverage is exactly the per-trade variation this design removes.
+        fixed = self.config.fixed_leverage
         leverage = effective_leverage(
-            signal_leverage,
+            fixed,
             max_leverage=self.config.max_leverage,
-            default_leverage=self.config.default_leverage,
+            default_leverage=fixed,
             exchange_max_leverage=spec.max_leverage,
         )
-        if signal_leverage is not None and leverage < signal_leverage:
-            log.warning(
-                f"leverage capped {signal_leverage}x -> {leverage}x for "
-                f"{spec.symbol}",
-                extra={"symbol": spec.symbol, "action": "leverage_capped"},
+        if leverage != fixed:
+            raise ExecutionRefused(
+                "LEVERAGE_INVALID",
+                f"{spec.symbol} allows at most {spec.max_leverage}x but every "
+                f"trade runs at a fixed {fixed}x; refusing rather than lowering",
+            )
+        if signal_leverage is not None and signal_leverage != fixed:
+            log.info(
+                f"signal asks {signal_leverage}x; trading the fixed {fixed}x",
+                extra={"symbol": spec.symbol, "action": "leverage_fixed"},
             )
 
         snapped_entries = tuple(
@@ -237,7 +245,7 @@ class ExecutionEngine:
         snapped_stop = round_price_to_tick(
             stop_loss, spec.tick_size, round_up=is_short
         )
-        leverage = self._leverage_for_stop(
+        self._require_stop_inside_liquidation(
             spec.symbol, direction, snapped_entries, snapped_stop, leverage
         )
 
@@ -267,15 +275,20 @@ class ExecutionEngine:
             stop_loss=snapped_stop,
         )
 
-    def _leverage_for_stop(
+    def _require_stop_inside_liquidation(
         self,
         symbol: str,
         direction: Direction,
         entries: tuple[Decimal, ...],
         stop: Decimal,
         leverage: Decimal,
-    ) -> Decimal:
-        """Lower `leverage` until the stop sits inside liquidation + buffer."""
+    ) -> None:
+        """Refuse (STOP_BEYOND_LIQUIDATION) a stop that liquidation would beat.
+
+        Leverage is fixed, so the only remedy for a stop that is too far away is
+        not to trade it. The distance is measured from the entry FARTHEST from
+        the stop (the worst case if only that entry fills).
+        """
         is_short = direction is Direction.SHORT
         try:
             safe = max_leverage_for_stop(
@@ -285,38 +298,24 @@ class ExecutionEngine:
         except SizingError as exc:
             raise ExecutionRefused(exc.reason, exc.detail) from exc
         if safe >= leverage:
-            return leverage
+            return
 
         distance = stop_distance(entries, stop, is_short=is_short) * 100
         far = min(entries) if is_short else max(entries)
-        liq_now = estimated_liquidation_price(far, leverage, is_short=is_short)
+        liq = estimated_liquidation_price(far, leverage, is_short=is_short)
         buffer = self.config.stop_liquidation_buffer_percent
-        if safe < self.config.min_leverage:
-            text = (
-                f"REFUSED {symbol} {direction.value}: stop {stop} is "
-                f"{distance:.2f}% from entry {far}; it needs <={safe}x to stay "
-                f"inside liquidation with a {buffer}pt buffer, below the "
-                f"{self.config.min_leverage}x floor. Not opened "
-                "(STOP_BEYOND_LIQUIDATION)."
-            )
-            log.warning(text, extra={"symbol": symbol,
-                                     "action": "stop_beyond_liquidation"})
-            send_alert(self.config.alert_telegram_bot_token,
-                       self.config.alert_telegram_chat_id, text)
-            raise ExecutionRefused("STOP_BEYOND_LIQUIDATION", text)
-
-        liq_safe = estimated_liquidation_price(far, safe, is_short=is_short)
-        margin_beyond = abs(liq_safe - stop) / far * 100
         text = (
-            f"LEVERAGE LOWERED {symbol} {direction.value}: stop {stop} is "
-            f"{distance:.2f}% from entry {far}; at {leverage}x est. liquidation "
-            f"{liq_now:.2f} (MMR 2%) comes before the stop. Opening at {safe}x "
-            f"(est. liq {liq_safe:.2f}, {margin_beyond:.2f}% beyond stop)."
+            f"REFUSED {symbol} {direction.value}: stop {stop} is {distance:.2f}% "
+            f"from entry {far}, but at the fixed {leverage}x est. liquidation "
+            f"{liq:.2f} (MMR 2%) comes before it (a stop must trigger {buffer}pt "
+            f"earlier; this stop would need <={safe}x). Not opened "
+            "(STOP_BEYOND_LIQUIDATION)."
         )
-        log.warning(text, extra={"symbol": symbol, "action": "leverage_lowered"})
+        log.warning(text, extra={"symbol": symbol,
+                                 "action": "stop_beyond_liquidation"})
         send_alert(self.config.alert_telegram_bot_token,
                    self.config.alert_telegram_chat_id, text)
-        return safe
+        raise ExecutionRefused("STOP_BEYOND_LIQUIDATION", text)
 
     def check_stop_inside_liquidation(self, plan: EntryPlan) -> None:
         """Defence in depth at submission: a hand-built or stale plan whose
@@ -380,26 +379,19 @@ class ExecutionEngine:
         calling this and log the before/after numbers — this method does not
         re-check, so call it only through those gated paths.
 
-        Re-asserts the symbol's EXPECTED leverage, not the cap: a trade the
-        stop-vs-liquidation guard opened at 8x must not be pushed back to 10x.
+        Always the fixed leverage (10x). There is no per-trade leverage to look
+        up, so there is nothing for a recovery or reconcile pass to get wrong.
         """
         return self.client.set_leverage_preference(
             symbol, self.expected_leverage(symbol)
         )
 
     def expected_leverage(self, symbol: str) -> Decimal:
-        """The leverage the account should hold for `symbol`.
-
-        The active trade's recorded intent_leverage (what open_trade set, after
-        the cap and the stop guard), never above the cap; the cap itself when
-        no trade is active. Callers compare against this BEFORE any
-        set-leverage: on a symbol with an open position set-leverage re-margins
-        it (KRAKEN_NOTES 1C), so an account already at this value is left alone.
-        """
-        trade = self.store.get_active_trade_for_symbol(symbol)
-        if trade is not None and trade["intent_leverage"]:
-            return min(Decimal(trade["intent_leverage"]), self.config.max_leverage)
-        return self.config.max_leverage
+        """The leverage the account should hold for `symbol`: always the fixed
+        leverage. Callers compare against this BEFORE any set-leverage: on a
+        symbol with an open position set-leverage re-margins it (KRAKEN_NOTES
+        1C), so an account already at this value is left alone."""
+        return self.config.fixed_leverage
 
     # ------------------------------------------------------------------
     # Entry
@@ -441,11 +433,18 @@ class ExecutionEngine:
                 f"plan carries {plan.leverage}x but the hard cap is "
                 f"{self.config.max_leverage}x — refusing to set it",
             )
+        if plan.leverage != self.config.fixed_leverage:
+            # A hand-built plan at some other leverage would make the account's
+            # leverage differ from what every later re-assertion restores.
+            raise ExecutionRefused(
+                "LEVERAGE_INVALID",
+                f"plan carries {plan.leverage}x but every trade runs at a "
+                f"fixed {self.config.fixed_leverage}x",
+            )
         self.check_stop_inside_liquidation(plan)
         self.client.set_leverage_preference(spec.symbol, plan.leverage)
-        # The leverage actually opened at, which the guard may have lowered
-        # below the signal's. Recovery and reconciliation read it back as the
-        # symbol's expected leverage, so they never push it back to the cap.
+        # What the trade actually opened at. Recorded for the audit trail: the
+        # trade row first holds the SIGNAL's number, which is not what ran.
         requested = self.store.get_trade(trade_id)["intent_leverage"]
         self.store.set_intent_leverage(trade_id, plan.leverage)
         if requested is None or Decimal(requested) != plan.leverage:

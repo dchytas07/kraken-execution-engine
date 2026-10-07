@@ -88,6 +88,7 @@ def startup(config: Config) -> Runtime:
         detail={
             "mode": config.trading_mode.value,
             "margin_usd": str(config.trade_margin_usd),
+            "leverage": str(config.fixed_leverage),
             "max_leverage": str(config.max_leverage),
             "gold_enabled": config.allow_xaut_for_gold,
         },

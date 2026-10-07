@@ -642,3 +642,27 @@ another clean, tests assert the gate opens, only the ambiguous trade is
 quarantined, the clean symbol can still open a trade, the quarantined symbol
 refuses new signals, and its position is still protected. A contrast test
 confirms a genuinely global fault (unreadable exchange) does halt everything.
+
+## Fixed 10x leverage (2026-10-07)
+
+Supersedes the per-trade leverage logic (signal leverage capped at 10x, then
+lowered by the stop-vs-liquidation guard down to `MIN_LEVERAGE`).
+
+Every trade runs at exactly `FIXED_LEVERAGE = 10x` (`config.py`). The signal's
+own figure (the channel asks for 5x-75x) is logged and ignored.
+
+- `plan_entries` never lowers leverage. If the exchange's maximum for the
+  instrument is below 10x it refuses (`LEVERAGE_INVALID`) rather than trade at
+  a different leverage.
+- A stop that would not trigger before estimated liquidation is refused as
+  `STOP_BEYOND_LIQUIDATION` and the signal is skipped. Estimated liquidation
+  uses the 2% maintenance rate (paper and live alike), so at 10x it is 8% from
+  entry; with the 1.0pt `STOP_LIQ_BUFFER_PCT` the farthest acceptable stop is
+  7% from the entry farthest from it.
+- `expected_leverage` and `reassert_leverage` always use 10x: there is no
+  per-trade value to look up, so recovery and reconciliation have nothing to get
+  wrong. They still never call set-leverage on an open position already at 10x
+  (KRAKEN_NOTES 1C: it re-margins the position), and still refuse to correct a
+  differing value when available margin is thin.
+- `DEFAULT_LEVERAGE` and `MIN_LEVERAGE` are gone. A `.env` that still sets them
+  is ignored. `MAX_LEVERAGE` remains a ceiling and must be >= 10.
