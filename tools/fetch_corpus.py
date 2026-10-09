@@ -1,6 +1,15 @@
 """Pull the signal channel's real history into corpus/channel_history.jsonl.
 
     .venv/bin/python tools/fetch_corpus.py [--limit N]
+    .venv/bin/python tools/fetch_corpus.py --list-dialogs "Some Name" ["Other"]
+    .venv/bin/python tools/fetch_corpus.py --channel "Exact Title" | --channel -100123...
+
+With no --channel it fetches the bot's configured channel into
+corpus/channel_history.jsonl, as it always has. --channel picks another dialog
+the account is ALREADY in (never joins anything) by exact title or numeric id
+and writes corpus/<slug>/history.jsonl. A title that matches more than one
+dialog is refused with the candidates listed. --list-dialogs only prints the
+dialogs whose title contains any of the given strings.
 
 Read-only, and never shares the live Telethon session: the running bot holds
 secrets/telegram.session (SQLite), so this connects with a COPY, exactly as
@@ -36,7 +45,46 @@ from bot.telegram.listener import media_kind  # noqa: E402
 OUT = ROOT / "corpus" / "channel_history.jsonl"
 
 
-async def fetch(limit: int | None) -> list[dict]:
+def slug(title: str) -> str:
+    out = "".join(c.lower() if c.isalnum() else "-" for c in title)
+    return "-".join(part for part in out.split("-") if part) or "channel"
+
+
+def _kind(entity) -> str:
+    if getattr(entity, "broadcast", False):
+        return "channel"
+    if getattr(entity, "megagroup", False):
+        return "supergroup"
+    if getattr(entity, "first_name", None) is not None or getattr(entity, "bot", False):
+        return "user/bot"
+    return "group"
+
+
+async def _members(client, entity) -> int | None:
+    count = getattr(entity, "participants_count", None)
+    if count is not None:
+        return count
+    try:  # read-only metadata request; does not join
+        from telethon.tl.functions.channels import GetFullChannelRequest
+        full = await client(GetFullChannelRequest(entity))
+        return full.full_chat.participants_count
+    except Exception:  # noqa: BLE001 — not a channel, or not allowed
+        return None
+
+
+async def _matching_dialogs(client, needles: list[str], exact: bool) -> list:
+    found = []
+    async for d in client.iter_dialogs():
+        title = d.title or ""
+        if exact:
+            if any(title.casefold() == n.casefold() for n in needles):
+                found.append(d)
+        elif any(n.casefold() in title.casefold() for n in needles):
+            found.append(d)
+    return found
+
+
+async def _connect():
     from telethon import TelegramClient
 
     config = load_config()
@@ -48,11 +96,43 @@ async def fetch(limit: int | None) -> list[dict]:
     shutil.copy2(live, copy)
     client = TelegramClient(str(copy), config.telegram_api_id, config.telegram_api_hash)
     await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise SystemExit("session copy is not authorized")
+    return client, tmp, config
+
+
+async def list_dialogs(needles: list[str]) -> None:
+    client, tmp, _ = await _connect()
     try:
-        if not await client.is_user_authorized():
-            raise SystemExit("session copy is not authorized")
+        for d in await _matching_dialogs(client, needles, exact=False):
+            members = await _members(client, d.entity)
+            print(f"{d.title!r}  id={d.id}  type={_kind(d.entity)}  "
+                  f"members={members if members is not None else 'n/a'}")
+    finally:
+        await client.disconnect()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def fetch(limit: int | None, channel: str | None = None) -> tuple[list[dict], str | None]:
+    client, tmp, config = await _connect()
+    try:
+        title = None
+        target = config.telegram_channel
+        if channel is not None:
+            if channel.lstrip("-").isdigit():
+                matches = [d async for d in client.iter_dialogs() if d.id == int(channel)]
+            else:
+                matches = await _matching_dialogs(client, [channel], exact=True)
+            if len(matches) != 1:
+                for d in matches:
+                    print(f"  candidate: {d.title!r} id={d.id}", file=sys.stderr)
+                raise SystemExit(f"{channel!r} matches {len(matches)} dialogs; "
+                                 "pass the exact id")
+            target, title = matches[0].entity, matches[0].title
         rows = []
-        async for m in client.iter_messages(config.telegram_channel, limit=limit):
+        async for m in client.iter_messages(target, limit=limit):
             if len(rows) % 250 == 0:
                 print(f"  fetched {len(rows)}...", flush=True)
             rows.append({
@@ -65,7 +145,7 @@ async def fetch(limit: int | None) -> list[dict]:
                 "forwarded": bool(getattr(m, "fwd_from", None)),
                 "grouped_id": getattr(m, "grouped_id", None),
             })
-        return sorted(rows, key=lambda r: r["id"])
+        return sorted(rows, key=lambda r: r["id"]), title
     finally:
         await client.disconnect()
         shutil.rmtree(tmp, ignore_errors=True)
@@ -74,11 +154,19 @@ async def fetch(limit: int | None) -> list[dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--channel", default=None,
+                    help="exact dialog title or numeric id; default: the bot's channel")
+    ap.add_argument("--list-dialogs", nargs="+", metavar="TEXT",
+                    help="print dialogs whose title contains TEXT, then exit")
     args = ap.parse_args()
-    rows = asyncio.run(fetch(args.limit))
-    OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
-    print(f"wrote {len(rows)} messages to {OUT.relative_to(ROOT)}")
+    if args.list_dialogs:
+        asyncio.run(list_dialogs(args.list_dialogs))
+        return
+    rows, title = asyncio.run(fetch(args.limit, args.channel))
+    out = OUT if args.channel is None else ROOT / "corpus" / slug(title) / "history.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+    print(f"wrote {len(rows)} messages to {out.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
