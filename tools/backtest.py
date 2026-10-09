@@ -83,6 +83,16 @@ MAINTENANCE = 0.02                   # liquidation estimate, as sizing.py
 TAKER_FEE = 0.0005                   # Kraken Futures base tier, every fill
 SLIPPAGE = 0.0005                    # adverse, on every market-type fill
 
+# --costs favourable: the maker fee only where the real engine's order rests on
+# the book (engine.py open_trade: plain "limit" entries, no post-only, so an
+# entry already through the market at placement crosses as a taker); every
+# other order is a trigger or market order (stop, take-profit with no limit
+# price, market close) and pays taker. Slippage on stop exits only.
+COST_MODEL = "default"
+MAKER_FEE = 0.0002
+FAVOURABLE_STOP_SLIPPAGE = 0.0002
+FILLS: Counter = Counter()           # (fill kind, fee kind) -> count
+
 ASSUMPTIONS = [
     "Sizing, leverage, the stop-vs-liquidation refusal, the stale-entry check and "
     "the TP split use the bot's own functions with production defaults: $30 margin "
@@ -320,17 +330,21 @@ class SimTrade:
 
     # -- fills -------------------------------------------------------------
 
-    def _fill_entry(self, leg: Leg, price: float) -> None:
+    def _fill_entry(self, leg: Leg, price: float, *, resting: bool) -> None:
         leg.filled, leg.fill_price = True, price
         self.position += leg.size
         self.entered_size += leg.size
         self.entry_cost += leg.size * price
-        self.fees += leg.size * price * TAKER_FEE
+        maker = COST_MODEL == "favourable" and resting
+        self.fees += leg.size * price * (MAKER_FEE if maker else TAKER_FEE)
+        FILLS[("entry, resting limit" if resting else "entry, marketable at placement",
+               "maker" if maker else "taker")] += 1
 
-    def _exit(self, size: float, price: float) -> None:
+    def _exit(self, size: float, price: float, kind: str) -> None:
         sign = 1 if self.is_long else -1
         self.realized += sign * (price - self.avg_entry) * size
         self.fees += size * price * TAKER_FEE
+        FILLS[(kind, "taker")] += 1
         self.position = max(0.0, self.position - size)
         if self.position < 1e-12:
             self.position = 0.0
@@ -339,10 +353,14 @@ class SimTrade:
         # _finalise_close cancels every leftover order, entries included.
         self.ended, self.t_end = outcome, t
 
-    def _adverse(self, price: float, closing: bool) -> float:
+    def _adverse(self, price: float, closing: bool, stop: bool = False) -> float:
         """Slippage against us. Closing a long sells (lower), opening buys."""
+        if COST_MODEL == "favourable":
+            slip = FAVOURABLE_STOP_SLIPPAGE if stop else 0.0
+        else:
+            slip = SLIPPAGE
         buy = (not closing) == self.is_long
-        return price * (1 + SLIPPAGE) if buy else price * (1 - SLIPPAGE)
+        return price * (1 + slip) if buy else price * (1 - slip)
 
     def _place_ladder(self, t_next: int) -> None:
         """place_take_profits: split the ACTUAL position, 25% per level."""
@@ -398,7 +416,7 @@ class SimTrade:
             touched = low <= leg.price if self.is_long else h >= leg.price
             if touched:
                 had_position = self.position > 0
-                self._fill_entry(leg, leg.price)
+                self._fill_entry(leg, leg.price, resting=True)
                 filled_now = True
                 if not had_position and not self.ladder:
                     self._place_ladder(t + 60)
@@ -417,7 +435,8 @@ class SimTrade:
                     break                    # ladder fills in order
                 leg.filled = True
                 size = min(leg.size, self.position)
-                self._exit(size, self._adverse(leg.price, closing=True))
+                self._exit(size, self._adverse(leg.price, closing=True),
+                           "take-profit trigger")
                 self.highest_tp = i
                 if self.position == 0:
                     break
@@ -434,7 +453,8 @@ class SimTrade:
                                  else "TP_LADDER_FLAT", t)
             if self.highest_tp >= len(self.ladder) and self.position:
                 # manager step 6: TP4 filled — close whatever remains.
-                self._exit(self.position, self._adverse(c, closing=True))
+                self._exit(self.position, self._adverse(c, closing=True),
+                           "market close of remainder after last TP")
                 return self._end("TP_LADDER_COMPLETE", t)
 
     def _stop_hit(self, o, low, h, same_bar_after_fill=False) -> bool:
@@ -443,20 +463,21 @@ class SimTrade:
     def _stopped(self, t: int, o: float) -> None:
         gap = (o < self.stop) if self.is_long else (o > self.stop)
         base = o if gap else self.stop
-        price = self._adverse(base, closing=True)
+        price = self._adverse(base, closing=True, stop=True)
         liq = self.avg_entry * (1 - (1 / float(LEVERAGE) - MAINTENANCE) * (
             1 if self.is_long else -1))
         if (self.is_long and price < liq) or (not self.is_long and price > liq):
             price = liq
             self.notes.append("liquidated (gap beyond liquidation estimate)")
-        self._exit(self.position, price)
+        self._exit(self.position, price, "stop exit")
         self._end("BREAKEVEN_STOP" if self.breakeven else "STOP", t)
 
     # -- channel instructions ------------------------------------------------
 
     def market_close(self, t: int, price: float, why: str) -> None:
         if self.position:
-            self._exit(self.position, self._adverse(price, closing=True))
+            self._exit(self.position, self._adverse(price, closing=True),
+                       "market close by channel")
         self._end(why if self.has_fills else "CANCELLED_BY_CHANNEL", t)
 
 
@@ -684,7 +705,7 @@ class Replay:
                 # A limit never fills worse than its own price.
                 px = tr._adverse(mark, closing=False)
                 px = min(px, leg.price) if tr.is_long else max(px, leg.price)
-                tr._fill_entry(leg, px)
+                tr._fill_entry(leg, px, resting=False)
                 if not had:
                     tr._place_ladder(t_place + 60)
                 else:
@@ -924,7 +945,8 @@ def report(rp: Replay, variant: Replay | None) -> str:
     dd, peak = max_drawdown(closed)
     w("P&L at our sizing ($30 margin, 10x, $300 notional per signal)")
     w(f"  gross price P&L                {fmt_money(gross):>12s}")
-    w(f"  taker fees                     {fmt_money(-fees):>12s}")
+    fee_label = "fees (maker + taker)" if COST_MODEL == "favourable" else "taker fees"
+    w(f"  {fee_label:29s} {fmt_money(-fees):>12s}")
     w(f"  funding                        {fmt_money(-fund):>12s}")
     w(f"  NET                            {fmt_money(net):>12s}")
     w(f"  per closed trade (expected)    {fmt_money(net / len(closed) if closed else 0):>12s}")
@@ -1056,12 +1078,23 @@ def main(argv=None) -> int:
                     help="scale the taker fee (stress test)")
     ap.add_argument("--slip-mult", type=float, default=1.0,
                     help="scale the slippage (stress test)")
+    ap.add_argument("--costs", choices=("default", "favourable"), default="default",
+                    help="favourable: maker fee on resting limit entries only, "
+                         "slippage 0.02%% on stop exits only")
     ap.add_argument("--since", default=None,
                     help="YYYY-MM-DD: replay only messages posted on/after this "
                          "date, as if the bot had started then")
     args = ap.parse_args(argv)
 
-    global TAKER_FEE, SLIPPAGE
+    global TAKER_FEE, SLIPPAGE, COST_MODEL
+    COST_MODEL = args.costs
+    if COST_MODEL == "favourable":
+        ASSUMPTIONS.append(
+            f"FAVOURABLE COSTS: maker {MAKER_FEE:.2%} on entries that rest on the "
+            f"book and fill later; taker {TAKER_FEE:.2%} on every other fill "
+            "(entries marketable at placement, take-profit triggers, stop exits, "
+            f"market closes). Slippage {FAVOURABLE_STOP_SLIPPAGE:.2%} on stop exits "
+            "only; none elsewhere. Supersedes the fee and slippage lines above.")
     TAKER_FEE *= args.fee_mult
     SLIPPAGE *= args.slip_mult
     if args.fee_mult != 1.0 or args.slip_mult != 1.0:
@@ -1080,11 +1113,16 @@ def main(argv=None) -> int:
     print("replaying (engine rules: breakeven after TP2) ...", file=sys.stderr)
     main_run = Replay(args.offline, be_after=2)
     main_run.run(messages)
+    main_fills = Counter(FILLS)
     print("replaying comparison variant (breakeven after TP1) ...", file=sys.stderr)
     variant = Replay(True, be_after=1, quiet=True)      # cache is warm by now
     variant.run(messages)
 
     text = report(main_run, variant)
+    if COST_MODEL == "favourable":
+        text += "\n\nFills by type and fee (main run, engine rules):\n" + "\n".join(
+            f"  {n:6d}  {kind:42s} {fee}"
+            for (kind, fee), n in sorted(main_fills.items()))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(text + "\n")
     rows = [{
@@ -1092,6 +1130,8 @@ def main(argv=None) -> int:
         "asset": r.asset.value, "direction": r.direction.value if r.direction else None,
         "verdict": r.verdict, "detail": r.detail,
         **({"outcome": r.trade.ended, "net": round(r.trade.net, 4),
+            "closed_at": (datetime.fromtimestamp(r.trade.t_end, UTC).isoformat()
+                          if r.trade.t_end else None),
             "highest_tp": r.trade.highest_tp, "fees": round(r.trade.fees, 4),
             "funding": round(r.trade.funding, 4), "notes": r.trade.notes,
             "claim": main_run.claims.get(r.msg_id, Claim()).outcome}
