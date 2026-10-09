@@ -41,6 +41,9 @@ from .sizing import SizingError
 
 log = get_logger(__name__)
 
+# How far a reply-to-a-reply chain is followed before it alerts instead.
+MAX_REPLY_HOPS = 5
+
 
 def _log_observation(parsed, raw_text: str, cls: Classification | None = None) -> None:
     """Emit a readable per-message block: raw text, parse, then decision.
@@ -128,6 +131,16 @@ class IngestResult:
     message_class: str | None = None
     action: str | None = None
     version: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Target:
+    """What an instruction may act on. `trade` is set only when it may act;
+    `review` means no action and a human is alerted; neither means there is
+    simply nothing of ours to act on (logged)."""
+    trade: object | None
+    why: str
+    review: bool = False
 
 
 class SignalPipeline:
@@ -479,51 +492,130 @@ class SignalPipeline:
             final = planned
         else:
             final = planned
+        # Every message is linked to the trade it is about, when there is one:
+        # the trade it opened or acted on, else (result posts, chatter, and
+        # instructions that were not executed) whatever its reply chain leads
+        # to, in any state. NULL when nothing links it.
+        linked = result.trade_id
+        if linked is None and parsed.referenced_message_id is not None:
+            trade, _ = self._trade_by_reply(parsed)
+            linked = trade["id"] if trade is not None else None
         self.store.set_version_outcome(
-            version_id, action=final.value, reason=detail,
-            trade_id=result.trade_id,
+            version_id, action=final.value, reason=detail, trade_id=linked,
         )
+        self.store.link_message(row_id, linked)
         if final is MessageAction.REVIEW_ALERT:
             send_review_alert(
                 self.config,
                 channel_id=parsed.channel_id, message_id=parsed.message_id,
                 version=version, message_class=cls.message_class.value,
                 reason=detail, text=parsed.raw_text, media=media,
-                trade_id=result.trade_id,
+                trade_id=linked,
             )
-        return replace(result, message_class=cls.message_class.value,
+        return replace(result, trade_id=linked,
+                       message_class=cls.message_class.value,
                        action=final.value, version=version)
 
-    # -- linking an update/cancel to its trade ---------------------------
+    # -- linking a message to its trade ----------------------------------
 
-    def _resolve_target(self, parsed, asset: CanonicalAsset | None):
-        """(trades, why). trades is None when the target is ambiguous.
+    def _trade_by_reply(self, parsed):
+        """(trade, why): the trade this message's reply chain leads to.
 
-        A reply is the strong link: this channel answers its own signal post
-        (all 25 stop updates and all 19 cancels in its history are replies).
-        The reply chain is followed a few hops because a reply to a reply is
-        common. A reply that leads to no trade of ours means 'not our signal',
-        which is [] (log), never a fallback to the symbol. Without a reply the
-        symbol is the only other link, and only when it picks exactly one trade.
+        The trade is returned in ANY state, so a result post is linked to its
+        trade even after that trade closed; whether an instruction may ACT on
+        it is `_resolve_target`'s decision. None means the chain does not end
+        at a trade of ours, and `why` says where it ended.
+
+        A reply to a reply is followed up to the original signal. The walk
+        stops at the first message that IS a signal: if that signal opened no
+        trade, the answer is None, never an older trade further up the chain.
+        An edited signal keeps its message id, so replies to it still resolve.
         """
+        channel = parsed.channel_id
         cur = parsed.referenced_message_id
-        hops = 0
-        while cur is not None and hops < 4:
-            trade = self.store.trade_for_origin_message(parsed.channel_id, cur)
+        seen: list[int] = []
+        while cur is not None:
+            if cur in seen or len(seen) >= MAX_REPLY_HOPS:
+                return None, (f"the reply chain from message "
+                              f"{parsed.referenced_message_id} could not be "
+                              f"followed to a signal (loop, or over "
+                              f"{MAX_REPLY_HOPS} hops)")
+            seen.append(cur)
+            trade = self.store.trade_for_origin_message(channel, cur)
             if trade is not None:
-                if TradeState(trade["state"]).is_terminal:
-                    return [], f"trade #{trade['id']} is already finished"
-                return [trade], f"linked by reply to trade #{trade['id']}"
-            msg = self.store.get_message(parsed.channel_id, cur)
-            cur = msg["reply_to_message_id"] if msg is not None else None
-            hops += 1
+                return trade, f"reply to signal {cur} (trade #{trade['id']})"
+            msg = self.store.get_message(channel, cur)
+            if msg is None:
+                return None, (f"replies to message {cur}, which the bot never "
+                              "stored: the chain cannot be followed")
+            if self._is_signal(msg):
+                detail = msg["rejection_detail"]
+                return None, (f"replies to signal {cur}, which never opened a "
+                              "trade" + (f" ({detail})" if detail else ""))
+            cur = msg["reply_to_message_id"]
+        return None, (f"the reply chain ends at message {seen[-1]}, which is "
+                      "not a signal")
+
+    def _is_signal(self, msg) -> bool:
+        """A stored message the bot classified as a signal (any version)."""
+        if msg["parsed_type"] == MessageType.NEW_SIGNAL.value:
+            return True
+        last = self.store.latest_message_version(msg["channel_id"], msg["message_id"])
+        return last is not None and last["message_class"] in (
+            MessageClass.NEW_SIGNAL.value,
+            MessageClass.UNPARSEABLE_SIGNAL_LIKE.value,
+        )
+
+    def _resolve_target(self, parsed, asset: CanonicalAsset | None,
+                        direction: Direction | None = None) -> _Target:
+        """The ONE live trade an update / cancel / close may act on.
+
+        Strict, because several trades can share a symbol
+        (MAX_TRADES_PER_SYMBOL):
+
+          * a REPLY targets only the trade its reply chain leads to. No trade,
+            a finished trade, or a named asset/direction that disagrees with
+            it means no action and a review alert. A reply never falls back
+            to the symbol;
+          * a NON-reply may fall back to the symbol only when exactly one live
+            trade exists on that symbol (and direction, when one is named).
+            Two or more: no action, review alert. None: nothing to act on.
+        """
         if parsed.referenced_message_id is not None:
-            return [], "the reply does not lead to one of our trades"
-        if asset is not None and asset in self.specs:
-            symbol = self.specs[asset].symbol
-            trades = [t for t in self.store.open_trades() if t["symbol"] == symbol]
-            return trades, f"matched by symbol {symbol}"
-        return None, "no reply and no asset: cannot tell which trade this is for"
+            trade, why = self._trade_by_reply(parsed)
+            if trade is None:
+                return _Target(None, why, review=True)
+            state = TradeState(trade["state"])
+            if state.is_terminal:
+                return _Target(None, f"{why}, which is already {state.value}",
+                               review=True)
+            if asset is not None and asset.value != trade["asset"]:
+                return _Target(None, f"names {asset.value} but is a {why}, "
+                                     f"a {trade['asset']} trade", review=True)
+            if direction is not None and direction.value != trade["direction"]:
+                return _Target(None, f"names {direction.value} but is a {why}, "
+                                     f"a {trade['direction']} trade", review=True)
+            return _Target(trade, f"linked by {why}")
+
+        if asset is None or asset not in self.specs:
+            return _Target(None, "no reply and no traded asset: cannot tell "
+                                 "which trade this is for", review=True)
+        symbol = self.specs[asset].symbol
+        live = [t for t in self.store.open_trades() if t["symbol"] == symbol]
+        if direction is not None:
+            same_way = [t for t in live if t["direction"] == direction.value]
+            if live and not same_way:
+                return _Target(None, f"names a {direction.value} but the live "
+                                     f"trade(s) on {symbol} go the other way",
+                               review=True)
+            live = same_way
+        if not live:
+            return _Target(None, f"no live trade on {symbol}")
+        if len(live) > 1:
+            return _Target(None, f"no reply, and {len(live)} open trades on "
+                                 f"{symbol} ({', '.join('#' + str(t['id']) for t in live)}); "
+                                 "refusing to guess which", review=True)
+        return _Target(live[0], f"matched by symbol {symbol}: its only live trade")
 
     def _review(self, row_id: int, detail: str, trade_id: int | None = None,
                 reason: RejectionReason = RejectionReason.NEEDS_HUMAN) -> IngestResult:
@@ -538,25 +630,17 @@ class SignalPipeline:
         if verdict.refused:
             return IngestResult(False, row_id, detail=verdict.detail)
 
-        trades, why = self._resolve_target(parsed, cls.asset)
-        if trades is None:
-            return self._review(row_id, why)
-        if not trades:
+        target = self._resolve_target(parsed, cls.asset)
+        why = target.why
+        if target.review:
+            return self._review(row_id, f"stop update not applied: {why}")
+        if target.trade is None:
             self.store.record_decision(
                 row_id, ExecutionDecision.IGNORED, None,
                 f"stop update not applied: {why}")
             return IngestResult(False, row_id, detail=why)
-        if len(trades) > 1:
-            return self._review(
-                row_id, f"stop update matches {len(trades)} open trades "
-                        f"({', '.join('#' + str(t['id']) for t in trades)}); "
-                        "refusing to guess which")
-        trade = trades[0]
+        trade = target.trade
         asset = CanonicalAsset(trade["asset"])
-        if cls.asset is not None and cls.asset is not asset:
-            return self._review(
-                row_id, f"update names {cls.asset.value} but it is linked to "
-                        f"{asset.value} trade #{trade['id']}", trade["id"])
         spec = self.specs.get(asset)
         if spec is None:
             return self._review(row_id, f"no instrument spec for {asset.value}",
@@ -586,19 +670,15 @@ class SignalPipeline:
         if verdict.refused:
             return IngestResult(False, row_id, detail=verdict.detail)
 
-        trades, why = self._resolve_target(parsed, asset)
-        if trades is None:
-            return self._review(row_id, why)
-        if not trades:
+        target = self._resolve_target(parsed, asset)
+        if target.review:
+            return self._review(row_id, f"cancel not applied: {target.why}")
+        if target.trade is None:
             self.store.record_decision(
                 row_id, ExecutionDecision.IGNORED, None,
-                f"cancel not applied: {why}")
-            return IngestResult(False, row_id, detail=why)
-        if len(trades) > 1:
-            return self._review(
-                row_id, f"cancel matches {len(trades)} open trades; "
-                        "refusing to guess which")
-        trade = trades[0]
+                f"cancel not applied: {target.why}")
+            return IngestResult(False, row_id, detail=target.why)
+        trade = target.trade
         if self.manager is None:
             return self._review(row_id, "no trade manager wired", trade["id"])
         done, detail = self.manager.cancel_unentered_trade(trade["id"])
@@ -628,35 +708,26 @@ class SignalPipeline:
             )
             return IngestResult(False, row_id, detail="no manager")
 
-        symbol = None
-        if parsed.asset is not None:
-            spec = self.specs.get(parsed.asset)
-            symbol = spec.symbol if spec else None
-
-        targets = self.manager.resolve_close_targets(
-            symbol=symbol,
-            direction=parsed.direction
-            if parsed.message_type is MessageType.CLOSE_DIRECTION else None,
-            reply_to_message_id=parsed.referenced_message_id
-            if parsed.message_type is MessageType.CLOSE_REPLY else None,
-            close_all=parsed.message_type is MessageType.CLOSE_ALL,
-        )
-
-        # "Close BTC short" names a direction as well as a symbol. The symbol
-        # picks the trade; the direction must AGREE with it, or the message is
-        # about a position we do not hold and nothing may be closed.
-        if (targets and parsed.message_type is MessageType.CLOSE_SYMBOL
-                and parsed.direction is not None):
-            matching = [t for t in targets
-                        if self.store.get_trade(t)["direction"] == parsed.direction.value]
-            if not matching:
+        if (parsed.referenced_message_id is not None
+                or parsed.message_type is MessageType.CLOSE_SYMBOL):
+            # One trade, by the strict rule: a reply closes only the trade its
+            # signal opened; "Close BTC" only when BTC has exactly one live
+            # trade. "Close BTC short" must also agree on direction.
+            target = self._resolve_target(parsed, parsed.asset, parsed.direction)
+            if target.review:
                 self.store.record_decision(
                     row_id, ExecutionDecision.REQUIRES_REVIEW,
                     RejectionReason.AMBIGUOUS_CLOSE_TARGET,
-                    f"close names a {parsed.direction.value} but the open trade "
-                    "on that symbol goes the other way; refusing to close")
-                return IngestResult(False, row_id, detail="direction mismatch")
-            targets = matching
+                    f"close not executed: {target.why}")
+                return IngestResult(False, row_id, detail=target.why)
+            targets = [target.trade["id"]] if target.trade is not None else []
+        else:
+            # Explicitly bulk: "Close all", "Close all shorts".
+            targets = self.manager.resolve_close_targets(
+                direction=parsed.direction
+                if parsed.message_type is MessageType.CLOSE_DIRECTION else None,
+                close_all=parsed.message_type is MessageType.CLOSE_ALL,
+            )
 
         if targets is None:
             self.store.record_decision(

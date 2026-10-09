@@ -320,15 +320,27 @@ def test_closing_one_trade_by_command_closes_only_that_trades_quantity(rig):
     assert not live(rig, a, "stop"), "A's orders are cancelled"
 
 
-def test_close_by_symbol_closes_every_trade_on_it(rig):
+def test_close_by_symbol_with_two_live_trades_closes_nothing_and_alerts(rig):
+    """'Close BTC Long' with no reply could mean either trade: never guess."""
     from tests.test_pipeline import fill_closes
     a, b = two_trades(rig)
     fill_closes(rig.exchange)
+    before = net(rig)
     r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=5, text="Close BTC Long")
-    assert r.accepted
-    assert net(rig) == D(0)
+    assert not r.accepted and r.action == "REVIEW_ALERT"
+    assert "2 open trades" in rig.alerts[-1]["reason"]
+    assert net(rig) == before
     for t in (a, b):
-        assert rig.store.get_trade(t)["state"] == TradeState.CLOSED.value
+        assert rig.store.get_trade(t)["state"] != TradeState.CLOSED.value
+
+
+def test_close_by_symbol_with_one_live_trade_closes_it(rig):
+    from tests.test_pipeline import fill_closes
+    a = open_trade(rig, 1)
+    fill_closes(rig.exchange)
+    r = rig.pipeline.handle_message(timestamp=time.time(), channel_id=CH, message_id=5, text="Close BTC Long")
+    assert r.accepted and r.trade_id == a
+    assert net(rig) == D(0) and rig.store.get_trade(a)["state"] == TradeState.CLOSED.value
 
 
 def test_a_trades_close_order_is_reduce_only_and_sized_to_the_trade(rig):

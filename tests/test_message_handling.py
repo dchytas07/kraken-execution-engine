@@ -290,11 +290,13 @@ def test_stop_update_with_no_reply_and_no_asset_alerts(rig):
     assert len(alerts) == 1
 
 
-def test_stop_update_replying_to_someone_elses_signal_is_logged_not_applied(rig):
+def test_stop_update_replying_to_a_message_we_never_saw_alerts_and_is_not_applied(rig):
+    """A reply is linked ONLY through its reply: it never falls back to the
+    symbol, even though BTC has exactly one live trade."""
     pipeline, store, exchange, alerts, _ = rig
     open_filled(pipeline, exchange)
     r = send(pipeline, 2, "SL Update : 62800", reply_to=99999)
-    assert r.action == "LOG_ONLY" and alerts == []
+    assert r.action == "REVIEW_ALERT" and "never stored" in alerts[-1]["reason"]
     assert stop_trigger(exchange) == D(62500)
 
 
@@ -358,10 +360,10 @@ def test_manual_cancel_of_a_trade_holding_a_position_alerts_and_does_not_close(r
     assert len(alerts) == 1
 
 
-def test_manual_cancel_for_a_signal_we_never_took_is_logged(rig):
+def test_manual_cancel_for_a_signal_we_never_took_alerts(rig):
     pipeline, store, exchange, alerts, _ = rig
     r = send(pipeline, 2, "#XPL/USDT Manually Cancelled", reply_to=555)
-    assert r.action == "LOG_ONLY" and alerts == []
+    assert r.action == "REVIEW_ALERT" and r.trade_id is None
 
 
 def test_manual_cancel_with_no_link_alerts(rig):

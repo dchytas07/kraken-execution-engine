@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS messages (
     rejection_detail    TEXT,
     processed_at        TEXT,
 
+    -- the trade this message is about: the one it opened or acted on, else
+    -- where its reply chain leads (result posts). NULL when nothing links it.
+    -- Added after first release: Store._migrate adds it to older databases.
+    linked_trade_id     INTEGER REFERENCES trades (id),
+
     UNIQUE (channel_id, message_id)
 );
 

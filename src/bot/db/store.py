@@ -83,6 +83,16 @@ class Store:
 
     def _migrate(self) -> None:
         self._conn.executescript(_SCHEMA_PATH.read_text())
+        # Columns added after a database was first created. CREATE TABLE IF NOT
+        # EXISTS leaves an existing table alone, so they are added here.
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+        if "linked_trade_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE messages ADD COLUMN linked_trade_id INTEGER "
+                "REFERENCES trades (id)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_linked_trade "
+            "ON messages (linked_trade_id)")
         row = self._conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
         if row["v"] is None:
             self._conn.execute(
@@ -225,6 +235,16 @@ class Store:
                     _now(),
                     row_id,
                 ),
+            )
+
+    def link_message(self, row_id: int, trade_id: int | None) -> None:
+        """Record which trade a message is about. A later version that links
+        nothing never erases an earlier link."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE messages SET linked_trade_id = COALESCE(?, linked_trade_id) "
+                "WHERE id = ?",
+                (trade_id, row_id),
             )
 
     # -- message versions --------------------------------------------------
