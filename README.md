@@ -3,13 +3,13 @@
 An automated execution engine that reads trade signals from a Telegram channel and
 trades them on **Kraken perpetual futures**, built with a safety-first, fail-closed design.
 
-> **Status:** complete, ran 24/7 in paper mode on Linux. Retired after a backtest showed
-> the signal source itself was unprofitable. The engineering is the point of this repo,
+> **Status:** complete, ran 24/7 in paper mode on Linux. A backtest showed
+> the original signal source was unprofitable. The engineering is the point of this repo,
 > not the strategy. Nothing here is financial advice.
 
 ## Highlights
 
-- **756 automated tests** (pytest), including a custom static-analysis audit that fails
+- **1,087 automated tests** (pytest), including a custom static-analysis audit that fails
   the build if any safety mechanism is implemented but never called in production.
 - **Soak test passed 85/85 checks**, max protection latency **0.84 s** against a 15 s limit.
 - **Crash-safe:** on restart the bot reconciles its local state against the exchange
